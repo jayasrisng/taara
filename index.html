@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Taara: Form the Gemini Constellation</title>
+<style>
+  :root { --w: 800px; --h: 600px; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: #fff;
+    font-family: Inter, system-ui, Arial, sans-serif;
+    color: #111;
+    display: grid;
+    place-items: center;
+  }
+  .wrap { position: relative; width: var(--w); }
+  canvas { background:#fff; display:block; width: var(--w); height: var(--h); border: 1px solid #eee; border-radius: 10px; }
+  .hud { position:absolute; inset:auto 0 100%; display:flex; gap:12px; justify-content:space-between; align-items:center; padding:10px 4px; }
+  .left { display:flex; gap:12px; align-items:center; }
+  .pill { font-size:14px; padding:6px 10px; border:1px solid #e5e5e5; border-radius:999px; background:#fafafa; }
+  button { appearance:none; border:1px solid #e5e5e5; background:#fff; border-radius:10px; padding:6px 12px; cursor:pointer; font-weight:600; }
+  #message { position:absolute; top:10px; left:50%; transform:translateX(-50%); font-size:22px; font-weight:700; color:#2e7d32; text-shadow:0 1px 0 #fff; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hud">
+      <div class="left">
+        <span class="pill">Goal: Connect the stars to form <b>Gemini</b></span>
+        <span class="pill" id="remaining"></span>
+      </div>
+      <div class="right">
+        <button id="hintBtn" title="Show/Hide the target shape">Hint</button>
+        <button id="resetBtn" title="Clear all lines (R)">Reset</button>
+      </div>
+    </div>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div id="message"></div>
+  </div>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const messageEl = document.getElementById('message');
+const remainingEl = document.getElementById('remaining');
+const resetBtn = document.getElementById('resetBtn');
+const hintBtn = document.getElementById('hintBtn');
+
+// === Gemini skeleton (approx positions for 800x600) ===
+const geminiNodes = [
+  { id: 'Pollux', x: 300, y: 100, size: 10 },
+  { id: 'Castor', x: 500, y: 100, size: 10 },
+  { id: 'Wasat', x: 330, y: 220, size: 8 },
+  { id: 'Mekbuda', x: 320, y: 350, size: 8 },
+  { id: 'Alhena', x: 300, y: 480, size: 8 },
+  { id: 'Mebsuta', x: 520, y: 240, size: 8 },
+  { id: 'Propus', x: 520, y: 360, size: 8 },
+  { id: 'Tejat', x: 500, y: 460, size: 8 }
+];
+
+const targetEdges = [
+  ['Pollux','Wasat'],
+  ['Wasat','Mekbuda'],
+  ['Mekbuda','Alhena'],
+  ['Castor','Mebsuta'],
+  ['Mebsuta','Propus'],
+  ['Propus','Tejat'],
+  ['Pollux','Castor'], // heads link
+  ['Wasat','Mebsuta']  // shoulders link
+];
+
+// Build node data with degree constraints derived from targetEdges
+const degreeMap = new Map();
+for (const [a,b] of targetEdges) {
+  degreeMap.set(a, (degreeMap.get(a)||0)+1);
+  degreeMap.set(b, (degreeMap.get(b)||0)+1);
+}
+let stars = geminiNodes.map(n => ({
+  id: n.id,
+  x: n.x,
+  y: n.y,
+  size: n.size,
+  links: [],
+  maxLinks: degreeMap.get(n.id) || 1,
+  color: (n.id==='Pollux'||n.id==='Castor') ? '#ffd54f' : '#90caf9'
+}));
+
+let draggingFrom = null;
+let showHint = false;
+
+function undirectedHas(edgeList, a, b) {
+  return edgeList.some(([x,y]) => (x===a && y===b) || (x===b && y===a));
+}
+
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // Optional hint: faint target shape
+  if (showHint) {
+    ctx.save();
+    ctx.globalAlpha = 0.15;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#000';
+    for (const [a,b] of targetEdges) {
+      const A = stars.find(s=>s.id===a); const B = stars.find(s=>s.id===b);
+      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Player connections
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 2;
+  for (const s of stars) {
+    for (const lid of s.links) {
+      const t = stars.find(x=>x.id===lid);
+      if (!t) continue;
+      // draw each undirected once
+      if (s.id < t.id) {
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+      }
+    }
+  }
+
+  // Stars
+  for (const s of stars) {
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size, 0, Math.PI*2);
+    ctx.fillStyle = s.color; ctx.fill(); ctx.stroke();
+    // label
+    ctx.font = '12px Arial';
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'center';
+    ctx.fillText(s.id, s.x, s.y - s.size - 10);
+    // degree indicator
+    ctx.font = '10px Arial';
+    ctx.fillText(`${s.links.length}/${s.maxLinks}`, s.x, s.y + s.size + 12);
+  }
+
+  updateRemaining();
+}
+
+function updateRemaining() {
+  const needed = targetEdges.length;
+  let have = 0;
+  for (const [a,b] of targetEdges) {
+    const A = stars.find(s=>s.id===a); const B = stars.find(s=>s.id===b);
+    if (A.links.includes(b) && B.links.includes(a)) have++;
+  }
+  const rem = needed - have;
+  remainingEl.textContent = `Lines placed: ${have}/${needed}`;
+  if (rem === 0) messageEl.textContent = 'You formed GEMINI! ✨';
+  else messageEl.textContent = '';
+}
+
+function getStarAt(x,y) {
+  return stars.find(s => Math.hypot(s.x-x, s.y-y) <= s.size);
+}
+
+function canLink(a,b) {
+  if (a.id === b.id) return false;
+  if (a.links.includes(b.id) || b.links.includes(a.id)) return false;
+  // must be one of the target edges
+  if (!undirectedHas(targetEdges, a.id, b.id)) return false;
+  // respect degree caps from constellation graph
+  if (a.links.length >= a.maxLinks || b.links.length >= b.maxLinks) return false;
+  return true;
+}
+
+function addLink(a,b) {
+  a.links.push(b.id);
+  b.links.push(a.id);
+}
+
+function reset() {
+  for (const s of stars) s.links = [];
+  messageEl.textContent = '';
+  draw();
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const s = getStarAt(x,y);
+  if (s) draggingFrom = s;
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  if (!draggingFrom) return;
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const t = getStarAt(x,y);
+  if (t && canLink(draggingFrom, t)) addLink(draggingFrom, t);
+  draggingFrom = null;
+  draw();
+});
+
+resetBtn.addEventListener('click', reset);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() === 'r') reset();
+  if (e.key.toLowerCase() === 'h') { showHint = !showHint; draw(); }
+});
+
+hintBtn.addEventListener('click', () => { showHint = !showHint; draw(); });
+
+// initial render
+reset();
+</script>
+</body>
+</html>
