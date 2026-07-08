@@ -29,6 +29,11 @@ export class MainMenu extends Scene {
     this.input.once('pointerdown', () => {
       this.scene.start('Game');
     });
+
+    // Debug key: press 'D' to view constellation debug scene
+    this.input.keyboard?.on('keydown-D', () => {
+      this.scene.start('ConstellationDebug');
+    });
   }
 
   /**
