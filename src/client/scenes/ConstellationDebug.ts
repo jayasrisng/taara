@@ -14,7 +14,7 @@ import type { Constellation } from '../../shared/constellations';
 export class ConstellationDebug extends Scene {
   private currentIndex = 0;
   private constellation: Constellation | null = null;
-  private stars: GameObjects.Arc[] = [];
+  private stars: GameObjects.GameObject[] = [];
   private lines: GameObjects.Line[] = [];
   private titleText: GameObjects.Text | null = null;
   private difficultyText: GameObjects.Text | null = null;
@@ -125,7 +125,7 @@ export class ConstellationDebug extends Scene {
         fontSize: '12px',
         color: '#888888',
       });
-      this.stars.push(label as any);
+      this.stars.push(label);
     });
   }
 
