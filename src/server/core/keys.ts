@@ -14,10 +14,16 @@
  *   tn:lb:{n}:whispers      zset   member = user, score = composite  (Med+Hard)
  *   tn:lb:jwala             zset   member = user, score = current streak
  *   tn:share:{n}:{user}     str    permalink of that user's share comment
+ *   tn:post:{postId}:night  str    the night that post plays, fixed at creation
+ *   tn:night:{n}:post       str    the post created for night n, if any
  *
  * The result hash doubles as the repeat-play guard: if it exists, this user has
  * already finished this night and nothing may be counted again. The share key
  * plays the same role for comments — one card per player per night.
+ *
+ * The two post keys are the same edge read from both ends. `tn:post:…:night` is
+ * what makes an old post keep playing its own sky forever; `tn:night:…:post`
+ * lets the nightly cron notice that tonight already has a post and stay quiet.
  */
 
 const PREFIX = 'tn';
@@ -32,6 +38,8 @@ export const keys = {
   lbWhispers: (night: number): string => `${PREFIX}:lb:${night}:whispers`,
   lbJwala: (): string => `${PREFIX}:lb:jwala`,
   share: (night: number, username: string): string => `${PREFIX}:share:${night}:${username}`,
+  postNight: (postId: string): string => `${PREFIX}:post:${postId}:night`,
+  nightPost: (night: number): string => `${PREFIX}:night:${night}:post`,
 };
 
 /**

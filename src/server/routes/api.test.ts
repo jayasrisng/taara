@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONSTELLATION_DATA } from '../../shared/constellationData';
 import { createFakeRedis } from '../core/fakeRedis';
+import { keys } from '../core/keys';
 
 type SubmittedComment = { id: string; text: string; runAs?: string };
 
@@ -165,6 +166,61 @@ describe('routes', () => {
     expect(boards.fastest).toEqual([{ username: 'ana', value: 42_000, rank: 1 }]);
     expect(boards.fewestWhispers).toEqual([{ username: 'ana', value: 1, rank: 1 }]);
     expect(boards.longestJwala).toEqual([{ username: 'ana', value: 1, rank: 1 }]);
+  });
+});
+
+/**
+ * An old post keeps its own sky. Everything the routes say — the night, the
+ * community count, the boards, the recorded result — must be about the night
+ * the post was pinned to, not about tonight.
+ */
+describe('an archive post', () => {
+  const ARCHIVE_NIGHT = 4;
+
+  beforeEach(async () => {
+    live.redis = createFakeRedis();
+    live.username = 'ana';
+    live.subredditName = 'taara_connect_dev';
+    live.postId = 't3_old';
+    live.comments = [];
+    await live.redis.set(keys.postNight('t3_old'), String(ARCHIVE_NIGHT));
+  });
+
+  it('GET /init opens the night the post was pinned to', async () => {
+    const body = await (await api.request('/init')).json();
+    expect(body.night).toBe(ARCHIVE_NIGHT);
+    expect(body.label).toBe(`TaaraNight #${ARCHIVE_NIGHT}`);
+  });
+
+  it('records the completion against the post’s night', async () => {
+    const body = await (await post(solve)).json();
+    expect(body.recorded).toBe(true);
+    expect(body.result.night).toBe(ARCHIVE_NIGHT);
+  });
+
+  it('shows that night’s stargazers, not tonight’s', async () => {
+    await post(solve);
+
+    const boards = await (await api.request('/leaderboards')).json();
+    expect(boards.night).toBe(ARCHIVE_NIGHT);
+    expect(boards.fastest).toEqual([{ username: 'ana', value: 42_000, rank: 1 }]);
+
+    live.postId = 't3_tonight';
+    const tonight = await (await api.request('/leaderboards')).json();
+    expect(tonight.night).not.toBe(ARCHIVE_NIGHT);
+    expect(tonight.fastest).toEqual([]);
+  });
+
+  it('shares that night’s card', async () => {
+    await post(solve);
+    const body = await (await share()).json();
+    expect(body.text).toContain(`TaaraNight #${ARCHIVE_NIGHT}`);
+  });
+
+  it('falls back to tonight for a post that was never pinned', async () => {
+    live.postId = 't3_before_step_7';
+    const body = await (await api.request('/init')).json();
+    expect(body.night).toBeGreaterThan(ARCHIVE_NIGHT);
   });
 });
 

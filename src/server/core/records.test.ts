@@ -265,4 +265,35 @@ describe('store', () => {
       expect(boards).toEqual({ fastest: [], fewestWhispers: [], longestJwala: [] });
     });
   });
+
+  describe('posts and their nights', () => {
+    it('reads a pinned night back from either end', async () => {
+      await store.savePostNight('t3_abc', 12);
+
+      expect(await store.loadPostNight('t3_abc')).toBe(12);
+      expect(await store.loadNightPost(12)).toBe('t3_abc');
+    });
+
+    it('knows nothing about a post it never pinned', async () => {
+      expect(await store.loadPostNight('t3_unknown')).toBeNull();
+      expect(await store.loadNightPost(7)).toBeNull();
+    });
+
+    it('keeps each post on its own night', async () => {
+      await store.savePostNight('t3_old', 3);
+      await store.savePostNight('t3_new', 9);
+
+      expect(await store.loadPostNight('t3_old')).toBe(3);
+      expect(await store.loadPostNight('t3_new')).toBe(9);
+    });
+
+    it('lets a re-created night point at the newest post', async () => {
+      await store.savePostNight('t3_first', 4);
+      await store.savePostNight('t3_second', 4);
+
+      expect(await store.loadNightPost(4)).toBe('t3_second');
+      // The old post keeps playing night 4 — it was never unpinned.
+      expect(await store.loadPostNight('t3_first')).toBe(4);
+    });
+  });
 });

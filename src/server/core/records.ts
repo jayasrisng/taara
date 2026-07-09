@@ -146,6 +146,37 @@ export function createStore(redis: RedisLike) {
   }
 
   /* ---------------------------------------------------------------- *
+   *  Posts and their nights
+   * ---------------------------------------------------------------- */
+
+  /**
+   * The night a post plays, pinned when the post was created.
+   *
+   * This is what keeps an archive post honest: last week's post opens last
+   * week's sky, not tonight's. Posts that predate this mapping return null and
+   * the caller falls back to tonight.
+   */
+  async function loadPostNight(postId: string): Promise<number | null> {
+    const raw = await redis.get(keys.postNight(postId));
+    if (!raw) return null;
+    const night = Number.parseInt(raw, 10);
+    return Number.isFinite(night) && night >= 1 ? night : null;
+  }
+
+  /** The post that already opened a night, if one did. */
+  async function loadNightPost(night: number): Promise<string | null> {
+    return (await redis.get(keys.nightPost(night))) ?? null;
+  }
+
+  /** Pin a post to its night, readable from either end. */
+  async function savePostNight(postId: string, night: number): Promise<void> {
+    await Promise.all([
+      redis.set(keys.postNight(postId), String(night)),
+      redis.set(keys.nightPost(night), postId),
+    ]);
+  }
+
+  /* ---------------------------------------------------------------- *
    *  Community / My Sky / leaderboards
    * ---------------------------------------------------------------- */
 
@@ -255,6 +286,9 @@ export function createStore(redis: RedisLike) {
     loadResult,
     loadShare,
     saveShare,
+    loadPostNight,
+    loadNightPost,
+    savePostNight,
     loadCommunity,
     loadMySky,
     loadLeaderboards,

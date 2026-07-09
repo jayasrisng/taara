@@ -13,6 +13,8 @@ describe('keys', () => {
       keys.lbWhispers(3),
       keys.lbJwala(),
       keys.share(3, 'stargazer'),
+      keys.postNight('t3_abc'),
+      keys.nightPost(3),
     ];
     for (const key of all) expect(key.startsWith('tn:')).toBe(true);
   });
@@ -22,6 +24,13 @@ describe('keys', () => {
     expect(keys.result(3, 'ana')).not.toBe(keys.result(3, 'bo'));
     expect(keys.share(3, 'ana')).not.toBe(keys.share(4, 'ana'));
     expect(keys.share(3, 'ana')).not.toBe(keys.share(3, 'bo'));
+  });
+
+  it('separates posts from nights, and from the night counters', () => {
+    expect(keys.postNight('t3_abc')).not.toBe(keys.postNight('t3_xyz'));
+    expect(keys.nightPost(3)).not.toBe(keys.nightPost(4));
+    expect(keys.nightPost(3)).not.toBe(keys.nightStars(3));
+    expect(keys.nightPost(3)).not.toBe(keys.nightPlayers(3));
   });
 });
 

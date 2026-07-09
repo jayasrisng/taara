@@ -27,23 +27,21 @@
   "menu": {
     "items": [
       {
-        "label": "Create a new post",
-        "description": "Create a new TaaraNight puzzle post",
+        "label": "Open tonight’s sky",
+        "description": "Create tonight’s TaaraNight puzzle post by hand",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/post-create"
-      },
-      {
-        "label": "Example form",
-        "description": "Show a simple form",
-        "location": "subreddit",
-        "forUserType": "moderator",
-        "endpoint": "/internal/menu/example-form"
       }
     ]
   },
-  "forms": {
-    "exampleForm": "/internal/form/example-submit"
+  "scheduler": {
+    "tasks": {
+      "nightly-post": {
+        "endpoint": "/internal/scheduler/nightly-post",
+        "cron": "0 1 * * *"
+      }
+    }
   },
   "triggers": {
     "onAppInstall": "/internal/triggers/on-app-install"

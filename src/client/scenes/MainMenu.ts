@@ -1,6 +1,7 @@
 import { Scene, GameObjects } from 'phaser';
 import * as Phaser from 'phaser';
 import { showToast } from '@devvit/web/client';
+import type { InitResponse } from '../../shared/api';
 import type { Difficulty } from '../../shared/constellations';
 import { nightNumberAt } from '../../shared/nightSeed';
 import { NightSky } from '../ui/NightSky';
@@ -32,6 +33,13 @@ const DENSE_H = 540;
 /** Below this width the cards drop their chevron and tighten their type. */
 const NARROW_W = 380;
 
+/**
+ * How long a tapped card will wait for the server to say which night this post
+ * plays. Past this the client's own guess opens the sky — a slow night is worse
+ * than a slightly wrong one.
+ */
+const NIGHT_WAIT_MS = 1500;
+
 export class MainMenu extends Scene {
   private sky!: NightSky;
   private ui: GameObjects.GameObject[] = [];
@@ -40,6 +48,10 @@ export class MainMenu extends Scene {
 
   /** Tonight, computed locally so the menu paints without waiting on the API. */
   private night = 1;
+  /** The server's answer, kept so a tapped card can wait on it if it must. */
+  private opening: Promise<InitResponse | null> | null = null;
+  /** True once `night` is the post's night rather than the client's guess. */
+  private synced = false;
   /** A quiet line of tonight's shared numbers, once the server has answered. */
   private communityLine: string | null = null;
 
@@ -50,6 +62,7 @@ export class MainMenu extends Scene {
   init(): void {
     this.ui = [];
     this.entered = false;
+    this.synced = false;
     this.communityLine = null;
   }
 
@@ -59,6 +72,7 @@ export class MainMenu extends Scene {
 
     onLayout(this, (view) => this.build(view));
 
+    this.opening = fetchInit();
     void this.syncWithServer();
 
     this.input.keyboard?.on('keydown-D', () => this.scene.start('ConstellationDebug'));
@@ -74,14 +88,48 @@ export class MainMenu extends Scene {
    * The server owns the night number and the community's numbers. The menu
    * shows its own guess first, then quietly reconciles — if the API is asleep,
    * the sky is still open.
+   *
+   * The guess is only ever "tonight". On an archive post the server answers with
+   * the night that post was born under, which is why `openPlay` waits for it.
    */
   private async syncWithServer(): Promise<void> {
-    const init = await fetchInit();
-    if (!init || !this.scene.isActive()) return;
+    const init = await this.opening;
+    if (!init) return;
 
     this.night = init.night;
-    this.communityLine = describeTonight(init.community.starsTonight, init.jwala.current);
+    this.synced = true;
+    if (!this.scene.isActive()) return;
+
+    this.communityLine = describeTonight(
+      init.community.starsTonight,
+      init.jwala.current,
+      this.isArchive()
+    );
     this.relayout();
+  }
+
+  /**
+   * True when this post opens a night that has already passed. Only knowable
+   * once the server has answered — before that, every post looks like tonight.
+   */
+  private isArchive(): boolean {
+    return this.synced && this.night < Math.max(1, nightNumberAt(Date.now()));
+  }
+
+  /**
+   * Open the puzzle on the night this post actually plays.
+   *
+   * By the time anyone has read three cards the server has long since answered,
+   * so this is normally instant; the race is only insurance against a stalled
+   * request holding the sky shut.
+   */
+  private async openPlay(difficulty: Difficulty): Promise<void> {
+    if (!this.synced) {
+      await Promise.race([this.opening, delay(NIGHT_WAIT_MS)]);
+    }
+    if (!this.scene.isActive()) return;
+
+    this.scene.start('Play', { difficulty, night: this.night });
   }
 
   /**
@@ -145,7 +193,8 @@ export class MainMenu extends Scene {
     top += title.height + clamp(6, h * 0.012, 12);
 
     const pillH = 32;
-    const pill = makePill(this, w / 2, top + pillH / 2, `🌙  Tonight · TaaraNight #${this.night}`, {
+    const when = this.isArchive() ? 'An older sky' : 'Tonight';
+    const pill = makePill(this, w / 2, top + pillH / 2, `🌙  ${when} · TaaraNight #${this.night}`, {
       height: pillH,
       paddingX: 17,
     });
@@ -336,11 +385,16 @@ export class MainMenu extends Scene {
     container.on('pointerdown', () => press());
     container.on('pointerup', () => {
       release();
-      this.scene.start('Play', { difficulty: d.value });
+      void this.openPlay(d.value);
     });
 
     return container;
   }
+}
+
+/** Resolves to null after `ms`, so a promise can be raced against the clock. */
+function delay(ms: number): Promise<null> {
+  return new Promise((resolve) => setTimeout(() => resolve(null), ms));
 }
 
 function stackHeight(cards: GameObjects.Container[], gap: number): number {
@@ -353,11 +407,12 @@ function rgbHex(color: number): string {
 }
 
 /** The soft community line under the difficulty cards. Never shames an empty sky. */
-function describeTonight(starsTonight: number, jwala: number): string {
+function describeTonight(starsTonight: number, jwala: number, archive: boolean): string {
+  const when = archive ? 'that night' : 'tonight';
   const stars =
     starsTonight > 0
-      ? `${starsTonight.toLocaleString()} stars lit tonight`
-      : 'No stars lit tonight — yours could be first';
+      ? `${starsTonight.toLocaleString()} stars lit ${when}`
+      : `No stars lit ${when} — yours could be first`;
 
   return jwala > 0 ? `${stars}  ·  Jwala 🔥 ${jwala}` : stars;
 }

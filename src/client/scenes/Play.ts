@@ -6,8 +6,9 @@
  * draw a line; correct edges bloom into being, wrong ones shake gently, and
  * Glitch decoys shimmer cold-cyan but never connect.
  *
- * The puzzle is computed on the client from the shared engine, so this scene is
- * self-contained and fully playable before the server (Step 5) exists.
+ * The puzzle is computed on the client from the shared engine, from the night
+ * the menu hands over — the post's own night, so an archive post reveals the
+ * constellation it was born under. Without one, tonight is the sensible guess.
  */
 
 import { Scene, GameObjects } from 'phaser';
@@ -60,7 +61,7 @@ interface Edge {
   progress: number;
 }
 
-type SceneData = { difficulty?: Difficulty };
+type SceneData = { difficulty?: Difficulty; night?: number };
 
 function connKey(a: number, b: number): string {
   return a < b ? `${a}-${b}` : `${b}-${a}`;
@@ -74,6 +75,7 @@ function mmss(totalSeconds: number): string {
 
 export class Play extends Scene {
   private difficulty: Difficulty = 'easy';
+  private night = 1;
   private puzzle!: NightlyPuzzle;
 
   private sky!: NightSky;
@@ -126,6 +128,7 @@ export class Play extends Scene {
 
   init(data: SceneData): void {
     this.difficulty = data.difficulty ?? 'easy';
+    this.night = data.night ?? Math.max(1, nightNumberAt(Date.now()));
     this.starViews = [];
     this.byId = new Map();
     this.solutionSet = new Set();
@@ -145,8 +148,7 @@ export class Play extends Scene {
   }
 
   create(): void {
-    const night = Math.max(1, nightNumberAt(Date.now()));
-    this.puzzle = generatePuzzle(night, this.difficulty);
+    this.puzzle = generatePuzzle(this.night, this.difficulty);
     this.whispersLeft = this.puzzle.params.maxWhispers;
     // Not `this.time.now`: the scene Clock has not ticked when `create` runs, so
     // it still reads 0 and the timer would count from page load, not from now.
@@ -156,7 +158,7 @@ export class Play extends Scene {
       this.solutionSet.add(connKey(edge.from, edge.to));
     }
 
-    this.sky = new NightSky(this, night);
+    this.sky = new NightSky(this, this.night);
 
     this.outlineGfx = this.add.graphics();
     this.connectionGfx = this.add.graphics();

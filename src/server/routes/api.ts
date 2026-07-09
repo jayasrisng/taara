@@ -9,6 +9,9 @@
  *
  * Identity is the Reddit user, resolved server-side. Logged-out visitors can
  * play every night in full; their results simply are not written anywhere.
+ *
+ * Every route speaks about *this post's night*, not tonight. An archive post
+ * therefore shows its own sky, its own community count and its own stargazers.
  */
 
 import { Hono, type Context as HonoContext } from 'hono';
@@ -24,7 +27,7 @@ import type {
 import { EMPTY_JWALA } from '../../shared/jwala';
 import { millisUntilNextNight } from '../../shared/nightSeed';
 import { buildShareText } from '../../shared/share';
-import { currentNight, resolveNight } from '../core/night';
+import { postNight, resolveNight } from '../core/night';
 import { TOTAL_CONSTELLATIONS } from '../core/records';
 import { store } from '../core/store';
 import { validateCompleteRequest } from '../core/validate';
@@ -36,9 +39,8 @@ function fail(c: HonoContext, message: string): Response {
 }
 
 api.get('/init', async (c) => {
-  const night = currentNight();
-
   try {
+    const night = await postNight();
     const username = (await reddit.getCurrentUsername()) ?? null;
 
     const [community, jwala, tonight] = await Promise.all([
@@ -59,7 +61,7 @@ api.get('/init', async (c) => {
       community,
     });
   } catch (error) {
-    console.error(`init failed for night ${night}:`, error);
+    console.error('init failed:', error);
     return fail(c, 'Could not open tonight’s sky');
   }
 });
@@ -76,9 +78,16 @@ api.post('/complete', async (c) => {
   if (!parsed.ok) return fail(c, parsed.message);
 
   const request = parsed.value;
-  const resolved = resolveNight(request.night);
-  if (!resolved.ok) return fail(c, resolved.message);
-  const night = resolved.night;
+
+  let night: number;
+  try {
+    const resolved = await resolveNight(request.night);
+    if (!resolved.ok) return fail(c, resolved.message);
+    night = resolved.night;
+  } catch (error) {
+    console.error('complete could not resolve the night:', error);
+    return fail(c, 'Could not record tonight’s sky');
+  }
 
   try {
     const username = await reddit.getCurrentUsername();
@@ -139,13 +148,12 @@ api.get('/mysky', async (c) => {
 });
 
 api.get('/leaderboards', async (c) => {
-  const night = currentNight();
-
   try {
+    const night = await postNight();
     const boards = await store.loadLeaderboards(night);
     return c.json<LeaderboardsResponse>({ type: 'leaderboards', night, ...boards });
   } catch (error) {
-    console.error(`leaderboards failed for night ${night}:`, error);
+    console.error('leaderboards failed:', error);
     return fail(c, 'Could not read tonight’s stargazers');
   }
 });
@@ -162,9 +170,8 @@ api.post('/share', async (c) => {
   const postId = context.postId;
   if (!postId) return fail(c, 'There is no post to share into');
 
-  const night = currentNight();
-
   try {
+    const night = await postNight();
     const username = await reddit.getCurrentUsername();
     if (!username) return fail(c, 'Sign in to share your night');
 
@@ -191,7 +198,7 @@ api.post('/share', async (c) => {
       permalink: comment.permalink,
     });
   } catch (error) {
-    console.error(`share failed for night ${night}:`, error);
+    console.error('share failed:', error);
     return fail(c, 'Could not post tonight’s card');
   }
 });
