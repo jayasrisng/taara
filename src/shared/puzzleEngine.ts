@@ -8,7 +8,7 @@
  * Whisper allowance). Same inputs → identical output, always.
  */
 
-import type { Constellation, Difficulty, Star } from './constellations';
+import type { Constellation, Difficulty } from './constellations';
 import { CONSTELLATION_DATA } from './constellationData';
 import { hashSeed, mulberry32, shuffleInPlace } from './rng';
 
@@ -44,15 +44,20 @@ export interface DifficultyParams {
 }
 
 /**
- * Difficulty definitions, mapped straight from the design:
- *  - Easy:   outline visible, no decoys.
- *  - Medium: star-count hint, a few decoys.
- *  - Hard:   decoys + timer + up to 3 Whispers.
+ * Difficulty definitions. Each mode has to announce itself in the first five
+ * seconds, so exactly one thing is added at every step and nothing is shared:
+ *
+ *  - Easy:   the whole outline, no Glitches, no timer, no Whispers — the
+ *            outline *is* the help, so a hint button would be noise.
+ *  - Medium: the outline goes away; a star count and a handful of Glitches
+ *            arrive, and with them the three Whispers.
+ *  - Hard:   the count goes away, the Glitches more than double, and the timer
+ *            starts. Still three Whispers, never more.
  */
 export const DIFFICULTY_PARAMS: Record<Difficulty, DifficultyParams> = {
-  easy: { showOutline: true, showStarCountHint: true, decoyCount: 0, timed: false, maxWhispers: 3 },
-  medium: { showOutline: false, showStarCountHint: true, decoyCount: 4, timed: false, maxWhispers: 3 },
-  hard: { showOutline: false, showStarCountHint: false, decoyCount: 8, timed: true, maxWhispers: 3 },
+  easy: { showOutline: true, showStarCountHint: true, decoyCount: 0, timed: false, maxWhispers: 0 },
+  medium: { showOutline: false, showStarCountHint: true, decoyCount: 5, timed: false, maxWhispers: 3 },
+  hard: { showOutline: false, showStarCountHint: false, decoyCount: 12, timed: true, maxWhispers: 3 },
 };
 
 /** A single star in the generated field. */
@@ -144,13 +149,19 @@ export function selectConstellationForNight(night: number): Constellation {
   return constellation;
 }
 
+/** A bare position in the 0–1 box. A Glitch is no star, so it has no catalogue. */
+interface Point {
+  x: number;
+  y: number;
+}
+
 /**
  * Scatter `count` Glitch decoy stars across the 0–1 box, keeping them a minimum
  * distance from the real stars and from each other so they read as distinct
  * points. Deterministic given `rng`.
  */
-function generateDecoys(realStars: Star[], count: number, rng: () => number): Star[] {
-  const decoys: Star[] = [];
+function generateDecoys(realStars: readonly Point[], count: number, rng: () => number): Point[] {
+  const decoys: Point[] = [];
   if (count <= 0) return decoys;
 
   const MIN_DISTANCE = 0.09;

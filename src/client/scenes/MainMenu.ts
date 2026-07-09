@@ -21,9 +21,9 @@ interface DiffDef {
 }
 
 const DIFFICULTIES: DiffDef[] = [
-  { label: 'Easy', value: 'easy', blurb: 'Outline shown · a gentle trace', color: 0xbfe6c9, dots: 1 },
-  { label: 'Medium', value: 'medium', blurb: 'A few Glitches hide among the stars', color: 0xffe3a3, dots: 2 },
-  { label: 'Hard', value: 'hard', blurb: 'Glitches, a soft timer & Whispers', color: 0xffb3b3, dots: 3 },
+  { label: 'Easy', value: 'easy', blurb: 'The outline is shown · no Glitches', color: 0xbfe6c9, dots: 1 },
+  { label: 'Medium', value: 'medium', blurb: 'No outline · a few Glitches · 3 Whispers', color: 0xffe3a3, dots: 2 },
+  { label: 'Hard', value: 'hard', blurb: 'No star count · many Glitches · a soft timer', color: 0xffb3b3, dots: 3 },
 ];
 
 /** Never let a card shrink below a comfortable thumb. */

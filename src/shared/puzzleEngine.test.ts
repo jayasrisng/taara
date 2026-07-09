@@ -59,26 +59,42 @@ describe('selection: no repeats within the window', () => {
 });
 
 describe('difficulty parameters', () => {
-  it('easy has an outline and no decoys', () => {
+  it('easy has the outline, no decoys, no timer and no Whispers', () => {
     expect(DIFFICULTY_PARAMS.easy.showOutline).toBe(true);
     expect(DIFFICULTY_PARAMS.easy.decoyCount).toBe(0);
     expect(DIFFICULTY_PARAMS.easy.timed).toBe(false);
+    expect(DIFFICULTY_PARAMS.easy.maxWhispers).toBe(0);
   });
 
-  it('medium adds a few decoys and a star-count hint but no timer', () => {
+  it('medium drops the outline and adds a few decoys, a star count and Whispers', () => {
+    expect(DIFFICULTY_PARAMS.medium.showOutline).toBe(false);
     expect(DIFFICULTY_PARAMS.medium.decoyCount).toBeGreaterThan(0);
     expect(DIFFICULTY_PARAMS.medium.showStarCountHint).toBe(true);
     expect(DIFFICULTY_PARAMS.medium.timed).toBe(false);
+    expect(DIFFICULTY_PARAMS.medium.maxWhispers).toBe(3);
   });
 
-  it('hard has the most decoys, a timer, and no outline', () => {
-    expect(DIFFICULTY_PARAMS.hard.decoyCount).toBeGreaterThan(DIFFICULTY_PARAMS.medium.decoyCount);
-    expect(DIFFICULTY_PARAMS.hard.timed).toBe(true);
+  it('hard drops the star count and adds a timer and many more decoys', () => {
     expect(DIFFICULTY_PARAMS.hard.showOutline).toBe(false);
+    expect(DIFFICULTY_PARAMS.hard.showStarCountHint).toBe(false);
+    expect(DIFFICULTY_PARAMS.hard.decoyCount).toBeGreaterThan(2 * DIFFICULTY_PARAMS.medium.decoyCount);
+    expect(DIFFICULTY_PARAMS.hard.timed).toBe(true);
   });
 
   it('caps Whispers at 3 on hard', () => {
     expect(DIFFICULTY_PARAMS.hard.maxWhispers).toBe(3);
+  });
+
+  it('makes each mode differ from the next by more than one setting', () => {
+    const { easy, medium, hard } = DIFFICULTY_PARAMS;
+    // Easy → Medium: the outline goes, decoys and Whispers arrive.
+    expect(easy.showOutline).not.toBe(medium.showOutline);
+    expect(easy.decoyCount).not.toBe(medium.decoyCount);
+    expect(easy.maxWhispers).not.toBe(medium.maxWhispers);
+    // Medium → Hard: the count goes, the timer starts, the decoys multiply.
+    expect(medium.showStarCountHint).not.toBe(hard.showStarCountHint);
+    expect(medium.timed).not.toBe(hard.timed);
+    expect(medium.decoyCount).not.toBe(hard.decoyCount);
   });
 });
 
@@ -118,6 +134,15 @@ describe('generatePuzzle: star field integrity', () => {
         expect(real.length).toBe(puzzle.realStarCount);
         expect(puzzle.stars.length).toBe(real.length + decoys.length);
       }
+    }
+  });
+
+  it('never starves the decoy scatter, however crowded the constellation', () => {
+    // Hard scatters twelve Glitches around up to ten real stars, all held apart
+    // by a minimum distance. Sixty nights covers every constellation.
+    for (let night = 1; night <= 60; night++) {
+      const decoys = generatePuzzle(night, 'hard').stars.filter((s) => s.isDecoy);
+      expect(decoys.length).toBe(DIFFICULTY_PARAMS.hard.decoyCount);
     }
   });
 

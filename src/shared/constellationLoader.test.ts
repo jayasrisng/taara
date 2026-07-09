@@ -11,6 +11,7 @@ import {
   getConstellationCount,
   getDatasetStats,
 } from './constellationLoader';
+import { projectToBox } from './projection';
 
 describe('Constellation Loader', () => {
   describe('loadConstellations', () => {
@@ -212,12 +213,129 @@ describe('Constellation Loader', () => {
       const hard = getConstellationsByDifficulty('hard');
 
       easy.forEach((c) => {
-        expect(c.stars.length).toBeLessThanOrEqual(5);
+        expect(c.stars.length).toBeLessThanOrEqual(6);
       });
 
       hard.forEach((c) => {
-        expect(c.stars.length).toBeGreaterThanOrEqual(6);
+        expect(c.stars.length).toBeGreaterThanOrEqual(9);
       });
+    });
+  });
+
+  /**
+   * The whole point of Step 8.5: the shapes are not drawn by hand, they are the
+   * sky. These tests are what stops a well-meaning tweak to an x or a y from
+   * quietly turning a constellation back into an approximation.
+   */
+  describe('Real sky', () => {
+    it('carries a real star designation and plausible coordinates for every star', () => {
+      loadConstellations().constellations.forEach((c) => {
+        c.stars.forEach((star) => {
+          expect(star.star.trim().length).toBeGreaterThan(0);
+          expect(star.ra).toBeGreaterThanOrEqual(0);
+          expect(star.ra).toBeLessThan(24);
+          expect(Math.abs(star.dec)).toBeLessThanOrEqual(90);
+        });
+      });
+    });
+
+    it('derives every 0–1 position from the star catalogue coordinates', () => {
+      loadConstellations().constellations.forEach((c) => {
+        const projected = projectToBox(c.stars.map((s) => ({ ra: s.ra, dec: s.dec })));
+        c.stars.forEach((star, i) => {
+          expect(star.x).toBeCloseTo(projected[i]!.x, 6);
+          expect(star.y).toBeCloseTo(projected[i]!.y, 6);
+        });
+      });
+    });
+
+    /**
+     * Spot-checked against the IAU Catalog of Star Names (WGSN, 2022-04-04).
+     * If someone re-types a coordinate from memory, this is what catches it.
+     */
+    it('matches the IAU catalogue for a sample of stars, to within an arcminute', () => {
+      const IAU: Record<string, [ra: number, dec: number]> = {
+        Polaris: [2.5303, 89.2641],
+        Betelgeuse: [5.9195, 7.4071],
+        Rigel: [5.2423, -8.2016],
+        Alnilam: [5.6036, -1.2019],
+        Vega: [18.6156, 38.7837],
+        Antares: [16.4901, -26.432],
+        Dubhe: [11.0621, 61.7508],
+        Alkaid: [13.7923, 49.3133],
+        Thuban: [14.0731, 64.3758],
+        Aljanah: [20.7702, 33.9703],
+      };
+      const found = new Map<string, { ra: number; dec: number }>();
+      loadConstellations().constellations.forEach((c) => {
+        c.stars.forEach((s) => found.set(s.star, s));
+      });
+
+      for (const [name, [ra, dec]] of Object.entries(IAU)) {
+        const star = found.get(name);
+        expect(star, `${name} is missing from the dataset`).toBeDefined();
+        // One arcminute of declination, and of right ascension at the equator.
+        expect(Math.abs(star!.dec - dec)).toBeLessThan(1 / 60);
+        expect(Math.abs(star!.ra - ra) * 15).toBeLessThan(1 / 60);
+      }
+    });
+
+    it('never uses a proper name that belongs to another star', () => {
+      const found = new Set<string>();
+      loadConstellations().constellations.forEach((c) => c.stars.forEach((s) => found.add(s.star)));
+      // Gienah is γ Corvi, not ε Cygni; Deneb Dulfim is an obsolete name for Aldulfin.
+      expect(found.has('Gienah')).toBe(false);
+      expect(found.has('Deneb Dulfim')).toBe(false);
+      expect(found.has('Aljanah')).toBe(true);
+      expect(found.has('Aldulfin')).toBe(true);
+    });
+
+    it('names the same star at most once within a constellation', () => {
+      loadConstellations().constellations.forEach((c) => {
+        const names = c.stars.map((s) => s.star);
+        expect(new Set(names).size).toBe(names.length);
+      });
+    });
+
+    it('keeps every pair of stars far enough apart to tap them apart', () => {
+      loadConstellations().constellations.forEach((c) => {
+        for (let i = 0; i < c.stars.length; i++) {
+          for (let j = i + 1; j < c.stars.length; j++) {
+            const a = c.stars[i]!;
+            const b = c.stars[j]!;
+            expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(0.06);
+          }
+        }
+      });
+    });
+
+    it('connects every star to at least one other, so none is unreachable', () => {
+      loadConstellations().constellations.forEach((c) => {
+        const touched = new Set<number>();
+        c.connections.forEach((conn) => {
+          touched.add(conn.from);
+          touched.add(conn.to);
+        });
+        expect(touched.size).toBe(c.stars.length);
+      });
+    });
+
+    it('shows Orion the way Orion is seen: Betelgeuse above and left of Rigel', () => {
+      const orion = getConstellationById('orion')!;
+      const at = (name: string) => orion.stars.find((s) => s.star === name)!;
+      expect(at('Betelgeuse').x).toBeLessThan(at('Rigel').x);
+      expect(at('Betelgeuse').y).toBeLessThan(at('Rigel').y);
+      // The belt is a line: Alnilam sits between Mintaka and Alnitak.
+      expect(at('Alnilam').x).toBeLessThan(at('Mintaka').x);
+      expect(at('Alnitak').x).toBeLessThan(at('Alnilam').x);
+    });
+
+    it("trails the Big Dipper's handle east of its bowl", () => {
+      const uma = getConstellationById('ursa-major')!;
+      const at = (name: string) => uma.stars.find((s) => s.star === name)!;
+      expect(at('Alkaid').x).toBeLessThan(at('Mizar').x);
+      expect(at('Mizar').x).toBeLessThan(at('Alioth').x);
+      expect(at('Alioth').x).toBeLessThan(at('Dubhe').x);
     });
   });
 

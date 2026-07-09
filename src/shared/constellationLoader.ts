@@ -2,7 +2,7 @@
  * Constellation data loader with validation
  */
 
-import type { Constellation, Difficulty, ConstellationDataset } from './constellations';
+import type { Constellation, Difficulty, ConstellationDataset, Star } from './constellations';
 import { CONSTELLATION_DATA } from './constellationData';
 
 export class ConstellationValidationError extends Error {
@@ -13,9 +13,10 @@ export class ConstellationValidationError extends Error {
 }
 
 /**
- * Validates a single star's position
+ * Validates a single star: the box position it is drawn at, and the celestial
+ * coordinates that position was derived from.
  */
-function validateStar(star: { x: number; y: number }, constellationId: string, starIndex: number): void {
+function validateStar(star: Star, constellationId: string, starIndex: number): void {
   if (typeof star.x !== 'number' || typeof star.y !== 'number') {
     throw new ConstellationValidationError(
       `Constellation ${constellationId}, star ${starIndex}: x and y must be numbers`
@@ -24,6 +25,21 @@ function validateStar(star: { x: number; y: number }, constellationId: string, s
   if (star.x < 0 || star.x > 1 || star.y < 0 || star.y > 1) {
     throw new ConstellationValidationError(
       `Constellation ${constellationId}, star ${starIndex}: coordinates must be in range [0, 1]. Got x=${star.x}, y=${star.y}`
+    );
+  }
+  if (!star.star || typeof star.star !== 'string') {
+    throw new ConstellationValidationError(
+      `Constellation ${constellationId}, star ${starIndex}: must name the real star`
+    );
+  }
+  if (typeof star.ra !== 'number' || star.ra < 0 || star.ra >= 24) {
+    throw new ConstellationValidationError(
+      `Constellation ${constellationId}, star ${starIndex}: right ascension must be in [0, 24) hours. Got ${star.ra}`
+    );
+  }
+  if (typeof star.dec !== 'number' || star.dec < -90 || star.dec > 90) {
+    throw new ConstellationValidationError(
+      `Constellation ${constellationId}, star ${starIndex}: declination must be in [-90, 90] degrees. Got ${star.dec}`
     );
   }
 }

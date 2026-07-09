@@ -35,7 +35,7 @@ const COLORS = {
   lineCore: 0xffe9c0,
   lineGlow: 0xffd27f,
   glitch: 0x7ff0ff,
-  outline: 0x51608f,
+  outline: 0x6c7fbb,
   accent: 0xffe3a3,
   wrong: 0xff8f9a,
   text: '#f5f3ff',
@@ -68,6 +68,21 @@ type SceneData = { difficulty?: Difficulty; night?: number };
 
 function connKey(a: number, b: number): string {
   return a < b ? `${a}-${b}` : `${b}-${a}`;
+}
+
+/**
+ * How close the two nearest stars come, in 0–1 units. Real constellations are
+ * not evenly spaced — Orion's belt sits far tighter than Cassiopeia's zigzag —
+ * so a fixed tap tolerance would either swallow the belt or miss the zigzag.
+ */
+function closestPair(stars: readonly PuzzleStar[]): number {
+  let min = 1;
+  for (let i = 0; i < stars.length; i++) {
+    for (let j = i + 1; j < stars.length; j++) {
+      min = Math.min(min, Math.hypot(stars[i]!.x - stars[j]!.x, stars[i]!.y - stars[j]!.y));
+    }
+  }
+  return min;
 }
 
 function mmss(totalSeconds: number): string {
@@ -107,7 +122,10 @@ export class Play extends Scene {
   private tutorial: Onboarding | null = null;
 
   private view: Viewport = { w: 0, h: 0 };
-  private area = { ox: 0, oy: 0, size: 0 };
+  /** Tap tolerance, in CSS pixels. Recomputed per layout — see `hitRadius`. */
+  private hitR = 28;
+  /** The closest two stars come in this puzzle, in 0–1 units. */
+  private starGap = 1;
 
   // Interaction.
   private downStar: StarView | null = null;
@@ -165,6 +183,7 @@ export class Play extends Scene {
     for (const edge of this.puzzle.solution) {
       this.solutionSet.add(connKey(edge.from, edge.to));
     }
+    this.starGap = closestPair(this.puzzle.stars);
 
     this.sky = new NightSky(this, this.night);
 
@@ -254,7 +273,7 @@ export class Play extends Scene {
 
     this.whisperPill = new Pill(this, '', { minWidth: 150 }, () => this.useWhisper());
     this.updateWhisperButton();
-    this.whisperPill.setVisible(!this.puzzle.params.showOutline && this.puzzle.params.maxWhispers > 0);
+    this.whisperPill.setVisible(this.puzzle.params.maxWhispers > 0);
   }
 
   private toggleSound(): void {
@@ -262,12 +281,17 @@ export class Play extends Scene {
     this.soundPill.setLabel(soundIcon()).setActive(prefs.sound);
   }
 
+  /**
+   * The one line that has to make the mode obvious before the player draws
+   * anything: it names the mode, then names what this mode gives and takes.
+   */
   private buildHintLabel(): string {
-    if (this.puzzle.params.showOutline) return 'Trace the glowing outline';
-    if (this.puzzle.params.showStarCountHint) {
-      return `Connect ${this.puzzle.realStarCount} stars · avoid the Glitches`;
+    const { showOutline, showStarCountHint, maxWhispers } = this.puzzle.params;
+    if (showOutline) return 'Easy · trace the glowing outline';
+    if (showStarCountHint) {
+      return `Medium · ${this.puzzle.realStarCount} true stars · avoid the Glitches`;
     }
-    return 'Find the hidden constellation';
+    return `Hard · no outline, no count · ${maxWhispers} Whispers`;
   }
 
   /* ---------------------------------------------------------------- *
@@ -296,6 +320,7 @@ export class Play extends Scene {
 
     this.titleText.setFontSize(w < NARROW_W ? 17 : 20);
     this.hintText.setFontSize(w < NARROW_W ? 12 : 14);
+    this.hintText.setWordWrapWidth(w - sidePad * 2);
 
     const leftGroup = this.backPill.width + controlGap + this.soundPill.width;
     const flank = Math.max(leftGroup, this.puzzle.params.timed ? this.timerPill.width : 0);
@@ -318,7 +343,7 @@ export class Play extends Scene {
     const size = Math.min(w - sidePad * 2, avail);
     const ox = (w - size) / 2;
     const oy = topBar + (avail - size) / 2;
-    this.area = { ox, oy, size };
+    this.hitR = clamp(20, this.starGap * size * 0.6, 34);
 
     for (const sv of this.starViews) {
       sv.container.setPosition(ox + sv.data.x * size, oy + sv.data.y * size);
@@ -337,22 +362,30 @@ export class Play extends Scene {
     this.tutorial?.layout(view);
   }
 
+  /** Tap tolerance: generous where the sky is empty, precise where stars crowd. */
   private hitRadius(): number {
-    return Math.max(28, this.area.size * 0.065);
+    return this.hitR;
   }
 
   /* ---------------------------------------------------------------- *
    *  Drawing
    * ---------------------------------------------------------------- */
 
+  /**
+   * Easy's guide. Two passes — a wide soft halo under a thin bright thread — so
+   * the shape is unmistakable at a glance without ever being mistaken for a
+   * thread the player has already drawn.
+   */
   private redrawOutline(): void {
     this.outlineGfx.clear();
     if (!this.puzzle.params.showOutline) return;
-    this.outlineGfx.lineStyle(2, COLORS.outline, 0.55);
     for (const edge of this.puzzle.solution) {
       const a = this.byId.get(edge.from);
       const b = this.byId.get(edge.to);
       if (!a || !b) continue;
+      this.outlineGfx.lineStyle(9, COLORS.outline, 0.16);
+      this.outlineGfx.lineBetween(a.container.x, a.container.y, b.container.x, b.container.y);
+      this.outlineGfx.lineStyle(2, COLORS.outline, 0.8);
       this.outlineGfx.lineBetween(a.container.x, a.container.y, b.container.x, b.container.y);
     }
   }

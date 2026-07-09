@@ -135,12 +135,14 @@ export class ConstellationDebug extends Scene {
       this.drawn.push(line);
     });
 
-    this.constellation.stars.forEach((star, index) => {
+    // Labelled with the real star, so the render can be held up against a sky
+    // chart and checked star by star.
+    this.constellation.stars.forEach((star) => {
       const x = ox + star.x * size;
       const y = oy + star.y * size;
       this.drawn.push(this.add.arc(x, y, 8, 0, 360, false, 0xffffff, 0.3));
       this.drawn.push(this.add.arc(x, y, 4, 0, 360, false, 0xffffff, 1.0));
-      this.drawn.push(crispText(this, x + 10, y - 10, `${index}`, { fontSize: '12px', color: '#888888' }));
+      this.drawn.push(crispText(this, x + 8, y - 14, star.star, { fontSize: '11px', color: '#8890b8' }));
     });
   }
 

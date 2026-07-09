@@ -9,6 +9,12 @@ export interface Star {
   x: number;
   /** Y position, normalized to 0-1 range */
   y: number;
+  /** Right ascension of the real star, in hours (J2000) */
+  ra: number;
+  /** Declination of the real star, in degrees (J2000) */
+  dec: number;
+  /** The star's designation, e.g. "Polaris" or "ζ UMi" */
+  star: string;
 }
 
 export interface Connection {
@@ -23,7 +29,7 @@ export interface Constellation {
   id: string;
   /** Display name of the constellation */
   name: string;
-  /** Star positions, normalized to 0-1 box */
+  /** Star positions, projected from `ra`/`dec` into the 0–1 box */
   stars: Star[];
   /** Connections between stars (by index) */
   connections: Connection[];
