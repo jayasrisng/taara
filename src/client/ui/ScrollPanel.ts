@@ -26,13 +26,14 @@
 import * as Phaser from 'phaser';
 import { Scene, GameObjects, Cameras } from 'phaser';
 import { DPR } from './display';
+import { duration, enterCamera } from './motion';
+import { color, space } from './theme';
 
 /** How far one wheel notch moves the content, in CSS pixels. */
 const WHEEL_STEP = 0.6;
 
 /** The thin bar that appears only when there is somewhere to scroll to. */
 const BAR_WIDTH = 3;
-const BAR_COLOR = 0x8b95c9;
 
 export class ScrollPanel {
   private scene: Scene;
@@ -95,12 +96,16 @@ export class ScrollPanel {
   }
 
   /**
-   * Fade the panel in alongside the scene. The panel has its own camera, so the
-   * main camera's fade does not cover it — without this the content pops in at
-   * full brightness while the rest of the screen is still arriving.
+   * Let the content arrive rather than appear.
+   *
+   * The panel has its own camera, so the scene's fade does not cover it — but
+   * that also means it can be faded alone, which is how a tab swap replaces a
+   * screenful of numbers without the swap being seen. (`motion.enter` and
+   * `motion.leave` sweep every camera in the scene, this one included, so the
+   * screen as a whole still arrives and departs as one.)
    */
-  fadeIn(duration: number, red: number, green: number, blue: number): void {
-    this.camera.fadeIn(duration, red, green, blue);
+  fadeIn(ms: number = duration.base): void {
+    enterCamera(this.camera, ms);
   }
 
   /** Tell the panel how tall its content turned out, so it knows its limits. */
@@ -184,14 +189,14 @@ export class ScrollPanel {
     if (this.maxScroll <= 0) return;
 
     const { x, y, w, h } = this.bounds;
-    const trackH = h - 8;
+    const trackH = h - space.sm;
     const thumbH = Math.max(28, (h / this.contentHeight) * trackH);
-    const thumbY = y + 4 + (this.scroll / this.maxScroll) * (trackH - thumbH);
+    const thumbY = y + space.xs + (this.scroll / this.maxScroll) * (trackH - thumbH);
     const thumbX = x + w - BAR_WIDTH;
 
-    this.bar.fillStyle(BAR_COLOR, 0.12);
-    this.bar.fillRoundedRect(thumbX, y + 4, BAR_WIDTH, trackH, BAR_WIDTH / 2);
-    this.bar.fillStyle(BAR_COLOR, 0.5);
+    this.bar.fillStyle(color.textFaint, 0.12);
+    this.bar.fillRoundedRect(thumbX, y + space.xs, BAR_WIDTH, trackH, BAR_WIDTH / 2);
+    this.bar.fillStyle(color.textFaint, 0.5);
     this.bar.fillRoundedRect(thumbX, thumbY, BAR_WIDTH, thumbH, BAR_WIDTH / 2);
   }
 

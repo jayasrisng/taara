@@ -1,8 +1,15 @@
+html,
 body {
   margin: 0;
   padding: 0;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #0f0f0f;
+  /* `color.textBright` and `color.canvas` from `ui/theme.ts`. Only the frame the
+     canvas has not covered yet is ever painted with these, so a stray grey here
+     reads as a flash of the wrong game. */
+  color: #f5f3ff;
+  background-color: #070b1f;
+  /* A drag across the sky is the game's, not the feed's: no pull-to-refresh,
+     no rubber-banding the page out from under a half-drawn constellation. */
+  overscroll-behavior: none;
 }
 
 #app {
@@ -20,4 +27,16 @@ body {
    `block` keeps the inline-baseline gap from creeping into the container. */
 #game-container canvas {
   display: block;
+
+  /* Phaser 4 sets none of this, and every one of them is a mobile bug:
+     - `touch-action`: without it the browser claims drags as scrolls and
+       two fingers as page zoom, so panning and pinching My Sky fight it.
+     - `user-select` / `touch-callout`: a slow drag between two stars otherwise
+       raises a selection lasso or the long-press menu.
+     - `tap-highlight-color`: Android paints a grey box over every tapped star. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }

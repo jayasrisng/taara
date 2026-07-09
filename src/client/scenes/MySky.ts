@@ -1,0 +1,760 @@
+/**
+ * My Sky — every constellation at once, where it really is.
+ *
+ * Not a gallery of thumbnails: one continuous dome, projected from the same
+ * catalogue coordinates the puzzle is drawn from (see `shared/skyMap.ts`). The
+ * constellations you have revealed burn gold and carry their names. The ones you
+ * have not are only faint, unlabelled stars among the dust — the shape and the
+ * name stay secret until the night you draw them.
+ *
+ * Drag to wander, pinch or scroll to zoom, tap a lit constellation to read its
+ * story again. Nothing is drawn in a scaled container: the dome's transform is a
+ * `zoom` (pixels per map unit) and a `centre`, and every star, thread and label
+ * is repositioned in screen pixels when either changes. So the line-work is one
+ * pixel wide at every zoom and the labels never blur.
+ */
+
+import * as Phaser from 'phaser';
+import { Scene, GameObjects } from 'phaser';
+import { getConstellationById } from '../../shared/constellationLoader';
+import {
+  SKY_BOUNDS,
+  SKY_FIGURES,
+  fieldStars,
+  nearestStar,
+  radiusForDec,
+  type FieldStar,
+  type MapPoint,
+  type SkyFigure,
+} from '../../shared/skyMap';
+import { fetchMySky } from '../api';
+import { NightSky } from '../ui/NightSky';
+import { crispText, texScale } from '../ui/display';
+import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { duration, ease, enter, leaveTo, motion, tween } from '../ui/motion';
+import { Pill } from '../ui/Pill';
+import { prefs } from '../ui/prefs';
+import { StoryCard } from '../ui/StoryCard';
+import { color, control, font, ink, space, typeScale } from '../ui/theme';
+import { TEX } from '../ui/textures';
+import type { ResultsData } from './Results';
+
+/** Grains of dust across the dome. Enough to feel deep, few enough to stay quiet. */
+const FIELD_COUNT = 260;
+const FIELD_SEED = 9;
+
+/** Parallels drawn faintly for orientation, plus the rim of the dome itself. */
+const RINGS = [60, 30, 0];
+
+/** How far a tap may miss a star and still find it, in CSS pixels. */
+const TAP_RADIUS = 26;
+/** Past this much movement, a press was a drag and not a tap. */
+const TAP_THRESHOLD = 12;
+
+/** Zoom limits, as multiples of the scale that frames the whole sky. */
+const MAX_ZOOM = 8;
+/** Names crowd each other when the sky is small; they appear as you lean in. */
+const LABEL_ZOOM = 1.6;
+
+/** Anything this far outside the viewport is not drawn at all. */
+const CULL = 48;
+
+/** How fast a flick decays, in milliseconds to 1/e of its speed. */
+const GLIDE_DECAY = 130;
+/** Below this speed (map units per ms) the sky has come to rest. */
+const GLIDE_STOP = 0.00002;
+
+export type MySkyData = {
+  /**
+   * The constellation just revealed. It is lit and centred on arrival even when
+   * nothing was recorded — a signed-out player still gets to see what they drew
+   * take its place in the sky.
+   */
+  tonight?: { constellationId: string; night: number };
+  /** Where "Back" goes. Carries the Results screen's state so it returns unchanged. */
+  results?: ResultsData;
+};
+
+/** A constellation's glow sprites, kept so a pan only moves them. */
+interface FigureView {
+  figure: SkyFigure;
+  glows: GameObjects.Image[];
+  label: GameObjects.Text | null;
+}
+
+export class MySky extends Scene {
+  private params: MySkyData = {};
+
+  private sky!: NightSky;
+  private view: Viewport = { w: 0, h: 0 };
+
+  private layer!: GameObjects.Container;
+  private ringGfx!: GameObjects.Graphics;
+  private dustGfx!: GameObjects.Graphics;
+  private threadGfx!: GameObjects.Graphics;
+  /** Glow sprites live under the star cores, so a core is never washed out by its own halo. */
+  private glowLayer!: GameObjects.Container;
+  private starGfx!: GameObjects.Graphics;
+
+  private dust: FieldStar[] = [];
+  private views: FigureView[] = [];
+
+  /** Constellation id → the night it was revealed. Empty until the server answers. */
+  private gathered = new Map<string, number>();
+  private answered = false;
+  private reachable = true;
+
+  // The dome’s transform: `zoom` pixels per map unit, `centre` at mid-screen.
+  private zoom = 1;
+  private fitZoom = 1;
+  private centre: MapPoint = { ...SKY_BOUNDS.centre };
+  /** False until the first layout has framed the sky. */
+  private framed = false;
+
+  // Input.
+  private dragging = false;
+  private pinching = false;
+  private pinchDistance = 0;
+  private downX = 0;
+  private downY = 0;
+  private moved = 0;
+  private lastX = 0;
+  private lastY = 0;
+  private lastMoveAt = 0;
+  private velocity = { x: 0, y: 0 };
+
+  private card: StoryCard | null = null;
+  /** The gentle breathing of the constellation revealed tonight. */
+  private pulse = 0;
+
+  private ui: GameObjects.GameObject[] = [];
+  private pills: Pill[] = [];
+  private subtitle: GameObjects.Text | null = null;
+  private hint: GameObjects.Text | null = null;
+  /** The band of screen the HUD owns. Constellation names keep out of it. */
+  private hudTop = 0;
+  private hudBottom = 0;
+
+  constructor() {
+    super('MySky');
+  }
+
+  init(data: MySkyData): void {
+    this.params = data ?? {};
+    this.views = [];
+    this.ui = [];
+    this.pills = [];
+    this.gathered = new Map();
+    this.answered = false;
+    this.reachable = true;
+    this.framed = false;
+    this.card = null;
+    this.subtitle = null;
+    this.hint = null;
+    this.dragging = false;
+    this.pinching = false;
+    this.velocity = { x: 0, y: 0 };
+    this.pulse = 0;
+
+    // Lit before the server confirms it: the player watched themselves draw it.
+    if (data?.tonight) this.gathered.set(data.tonight.constellationId, data.tonight.night);
+  }
+
+  create(): void {
+    this.sky = new NightSky(this, this.params.tonight?.night ?? 1);
+    this.dust = fieldStars(FIELD_COUNT, FIELD_SEED);
+
+    this.ringGfx = this.add.graphics();
+    this.dustGfx = this.add.graphics();
+    this.threadGfx = this.add.graphics();
+    this.glowLayer = this.add.container(0, 0);
+    this.starGfx = this.add.graphics();
+    this.layer = this.add
+      .container(0, 0, [this.ringGfx, this.dustGfx, this.threadGfx, this.glowLayer, this.starGfx])
+      .setDepth(1);
+
+    this.buildFigures();
+    onLayout(this, (view) => this.layout(view));
+    this.registerInput();
+
+    // Tonight's constellation breathes. Held still it simply rests at its
+    // brightest — a pulse frozen at its trough would leave the newest sky the
+    // dimmest thing on the dome.
+    const breathing = motion(this, {
+      targets: this,
+      pulse: 1,
+      duration: duration.breath,
+      yoyo: true,
+      repeat: -1,
+      ease: ease.inOut,
+      onUpdate: () => this.drawThreads(),
+    });
+    if (!breathing) {
+      this.pulse = 1;
+      this.drawThreads();
+    }
+
+    void this.loadSky();
+    enter(this);
+  }
+
+  override update(_time: number, delta: number): void {
+    if (this.dragging || this.pinching || this.busy()) return;
+
+    const speed = Math.hypot(this.velocity.x, this.velocity.y);
+    if (speed < GLIDE_STOP) return;
+
+    this.setCentre(this.centre.x + this.velocity.x * delta, this.centre.y + this.velocity.y * delta);
+
+    const decay = Math.exp(-delta / GLIDE_DECAY);
+    this.velocity.x *= decay;
+    this.velocity.y *= decay;
+    this.redraw();
+  }
+
+  /* ---------------------------------------------------------------- *
+   *  Data
+   * ---------------------------------------------------------------- */
+
+  private async loadSky(): Promise<void> {
+    const mine = await fetchMySky();
+    if (!this.scene.isActive()) return;
+
+    this.answered = true;
+    this.reachable = mine !== null;
+    for (const entry of mine?.entries ?? []) {
+      this.gathered.set(entry.constellationId, entry.night);
+    }
+
+    this.buildFigures();
+    this.redraw();
+    this.updateCaptions();
+  }
+
+  private isLit(figure: SkyFigure): boolean {
+    return this.gathered.has(figure.id);
+  }
+
+  private isTonight(figure: SkyFigure): boolean {
+    return this.params.tonight?.constellationId === figure.id;
+  }
+
+  private subtitleText(): string {
+    const lit = this.gathered.size;
+    if (!this.answered && lit === 0) return 'Opening your sky…';
+    if (!this.reachable && lit === 0) return 'Your sky is out of reach right now';
+    if (lit === 0) return 'Every constellation you reveal is lit here, night after night';
+    return `${lit} of ${SKY_FIGURES.length} skies gathered`;
+  }
+
+  /**
+   * Both captions describe what the server has just said, so both are rewritten
+   * when it answers — the hint only invites a tap once there is something lit to
+   * tap. Rewritten in place rather than by a re-layout, which would jump the sky.
+   */
+  private updateCaptions(): void {
+    this.subtitle?.setText(this.subtitleText());
+    this.hint?.setText(this.hintText());
+  }
+
+  /* ---------------------------------------------------------------- *
+   *  The dome
+   * ---------------------------------------------------------------- */
+
+  /**
+   * A glow sprite and a name for every gathered constellation. The sleeping ones
+   * need neither: they are drawn as plain dots straight into `starGfx`.
+   */
+  private buildFigures(): void {
+    for (const view of this.views) {
+      view.glows.forEach((glow) => glow.destroy());
+      view.label?.destroy();
+    }
+    this.views = [];
+
+    for (const figure of SKY_FIGURES) {
+      if (!this.isLit(figure)) continue;
+
+      const glows = figure.points.map(() =>
+        this.add.image(0, 0, TEX.starSoft).setScale(texScale(0.22)).setTint(color.starCore).setAlpha(0.75)
+      );
+
+      const label = crispText(this, 0, 0, figure.name, {
+        fontFamily: font.serif,
+        fontSize: `${typeScale.caption}px`,
+        color: ink.accent,
+      }).setOrigin(0.5, 0);
+      label.setAlpha(0.85);
+
+      this.glowLayer.add(glows);
+      this.layer.add(label);
+      this.views.push({ figure, glows, label });
+    }
+  }
+
+  private toScreen(point: MapPoint): MapPoint {
+    return {
+      x: this.view.w / 2 + (point.x - this.centre.x) * this.zoom,
+      y: this.view.h / 2 + (point.y - this.centre.y) * this.zoom,
+    };
+  }
+
+  private toMap(x: number, y: number): MapPoint {
+    return {
+      x: this.centre.x + (x - this.view.w / 2) / this.zoom,
+      y: this.centre.y + (y - this.view.h / 2) / this.zoom,
+    };
+  }
+
+  private onScreen(point: MapPoint): boolean {
+    return (
+      point.x > -CULL && point.x < this.view.w + CULL && point.y > -CULL && point.y < this.view.h + CULL
+    );
+  }
+
+  /**
+   * Keep the sky in the frame. Per axis: if the whole sky already fits, the dome
+   * is pinned — it cannot be flicked away into the empty rim. Otherwise the
+   * middle of the screen may go anywhere inside the rectangle the constellations
+   * occupy, so every one of them can be brought to the centre. (Clamping the
+   * *viewport* to that rectangle instead would put Orion and Scorpius, which sit
+   * on its edge, permanently out of reach.)
+   */
+  private setCentre(x: number, y: number): void {
+    const halfW = this.view.w / 2 / this.zoom;
+    const halfH = this.view.h / 2 / this.zoom;
+    const slackX = halfW >= SKY_BOUNDS.width / 2 ? 0 : SKY_BOUNDS.width / 2;
+    const slackY = halfH >= SKY_BOUNDS.height / 2 ? 0 : SKY_BOUNDS.height / 2;
+
+    this.centre = {
+      x: clamp(SKY_BOUNDS.centre.x - slackX, x, SKY_BOUNDS.centre.x + slackX),
+      y: clamp(SKY_BOUNDS.centre.y - slackY, y, SKY_BOUNDS.centre.y + slackY),
+    };
+
+    if (this.centre.x !== x) this.velocity.x = 0;
+    if (this.centre.y !== y) this.velocity.y = 0;
+  }
+
+  private setZoom(next: number): void {
+    this.zoom = clamp(this.fitZoom, next, this.fitZoom * MAX_ZOOM);
+  }
+
+  /* ---------------------------------------------------------------- *
+   *  Drawing
+   * ---------------------------------------------------------------- */
+
+  private redraw(): void {
+    this.drawRings();
+    this.drawDust();
+    this.drawThreads();
+    this.drawStars();
+    this.drawLabels();
+  }
+
+  /**
+   * Parallels of declination, centred on the pole. A ring whose band is nowhere
+   * near the viewport is skipped: at full zoom its radius is tens of thousands
+   * of pixels, and asking the renderer to stroke that circle is pointless work.
+   */
+  private drawRings(): void {
+    this.ringGfx.clear();
+    const pole = this.toScreen({ x: 0, y: 0 });
+    const reach = Math.hypot(this.view.w, this.view.h) / 2 + CULL;
+    const fromPole = Math.hypot(pole.x - this.view.w / 2, pole.y - this.view.h / 2);
+
+    const ring = (dec: number, alpha: number): void => {
+      const radius = radiusForDec(dec) * this.zoom;
+      if (Math.abs(radius - fromPole) > reach) return;
+      this.ringGfx.lineStyle(1, color.line, alpha);
+      this.ringGfx.strokeCircle(pole.x, pole.y, radius);
+    };
+
+    for (const dec of RINGS) ring(dec, 0.5);
+    ring(-45, 0.7);
+  }
+
+  private drawDust(): void {
+    this.dustGfx.clear();
+    for (const grain of this.dust) {
+      const point = this.toScreen(grain);
+      if (!this.onScreen(point)) continue;
+      this.dustGfx.fillStyle(color.dust, 0.18 + grain.magnitude * 0.42);
+      this.dustGfx.fillCircle(point.x, point.y, 0.7 + grain.magnitude * 1.3);
+    }
+  }
+
+  /** Only gathered constellations have threads. A sleeping shape is the spoiler. */
+  private drawThreads(): void {
+    this.threadGfx.clear();
+
+    for (const { figure } of this.views) {
+      const breath = this.isTonight(figure) ? 0.55 + 0.45 * this.pulse : 0.7;
+
+      for (const edge of figure.connections) {
+        const a = this.toScreen(figure.points[edge.from]!);
+        const b = this.toScreen(figure.points[edge.to]!);
+        if (!this.onScreen(a) && !this.onScreen(b)) continue;
+
+        this.threadGfx.lineStyle(7, color.accentGlow, 0.12 * breath);
+        this.threadGfx.lineBetween(a.x, a.y, b.x, b.y);
+        this.threadGfx.lineStyle(1.6, color.accentBright, 0.9 * breath);
+        this.threadGfx.lineBetween(a.x, a.y, b.x, b.y);
+      }
+    }
+  }
+
+  /**
+   * Sleeping stars are dots. Gathered ones are dots with a glow sprite behind
+   * them, which is why they are the only stars that own a game object.
+   */
+  private drawStars(): void {
+    this.starGfx.clear();
+
+    for (const figure of SKY_FIGURES) {
+      if (this.isLit(figure)) continue;
+      for (const star of figure.points) {
+        const point = this.toScreen(star);
+        if (!this.onScreen(point)) continue;
+        this.starGfx.fillStyle(color.sleeping, 0.5);
+        this.starGfx.fillCircle(point.x, point.y, 1.6);
+      }
+    }
+
+    for (const view of this.views) {
+      view.figure.points.forEach((star, index) => {
+        const point = this.toScreen(star);
+        const visible = this.onScreen(point);
+        view.glows[index]!.setVisible(visible).setPosition(point.x, point.y);
+        if (!visible) return;
+        this.starGfx.fillStyle(color.starCore, 1);
+        this.starGfx.fillCircle(point.x, point.y, 2.1);
+      });
+    }
+  }
+
+  /**
+   * A name hangs below its constellation, and only once you have leaned in —
+   * at the whole-sky zoom nineteen of them would sit on top of each other.
+   *
+   * It also stays out of the bands the HUD occupies. A gold name drifting under
+   * the "My Sky" title reads as a mistake, and the sky is right there to pan.
+   */
+  private drawLabels(): void {
+    const showing = this.zoom >= this.fitZoom * LABEL_ZOOM;
+
+    for (const view of this.views) {
+      const label = view.label;
+      if (!label) continue;
+
+      const centre = this.toScreen(view.figure.centre);
+      const y = centre.y + view.figure.radius * this.zoom + space.md;
+      label.setPosition(centre.x, y);
+
+      const clear = y > this.hudTop && y + label.height < this.hudBottom;
+      label.setVisible(showing && clear && this.onScreen({ x: centre.x, y }));
+    }
+  }
+
+  /* ---------------------------------------------------------------- *
+   *  Layout
+   * ---------------------------------------------------------------- */
+
+  private layout(view: Viewport): void {
+    this.view = view;
+    const { w, h } = view;
+    this.sky.layout(view);
+
+    this.ui.forEach((object) => object.destroy());
+    this.pills.forEach((pill) => pill.destroy());
+    this.ui = [];
+    this.pills = [];
+
+    const sidePad = clamp(space.md, w * 0.045, space.xl + space.xs);
+
+    /* ---- the sky is framed before anything is drawn on top of it ---- */
+
+    // The whole sky, with a margin, is the most zoomed-out the dome ever gets.
+    const margin = space.xl + space.xs;
+    this.fitZoom = Math.min(
+      (w - margin * 2) / SKY_BOUNDS.width,
+      (h - margin * 2) / SKY_BOUNDS.height
+    );
+
+    if (!this.framed) {
+      this.framed = true;
+      this.frameOn(this.openingFigure());
+    } else {
+      this.setZoom(this.zoom);
+      this.setCentre(this.centre.x, this.centre.y);
+    }
+
+    /* ---- the HUD floats over it ---- */
+
+    const rowY = space.md + control.md / 2;
+    const back = new Pill(this, '‹ Back', { minWidth: 72 }, () => this.leave());
+    back.setPosition(sidePad + back.width / 2, rowY);
+    this.pills.push(back);
+
+    const whole = new Pill(this, '⤢', { minWidth: control.md, paddingX: space.sm }, () => this.frameWholeSky());
+    whole.setPosition(w - sidePad - whole.width / 2, rowY);
+    this.pills.push(whole);
+
+    const flank = Math.max(back.width, whole.width);
+    const title = crispText(this, w / 2, rowY, 'My Sky', {
+      fontFamily: font.serif,
+      fontSize: `${typeScale.title}px`,
+      color: ink.bright,
+    }).setOrigin(0.5);
+    // Drops to its own row rather than running through the pills on a narrow phone.
+    if (title.width > w - 2 * (sidePad + flank) - space.xl) {
+      title.setY(space.md + control.md + space.sm + title.height / 2);
+    }
+    this.ui.push(title);
+
+    const subtitle = crispText(this, w / 2, title.y + title.height / 2 + space.xs, this.subtitleText(), {
+      fontFamily: font.sans,
+      fontSize: `${typeScale.caption}px`,
+      color: ink.muted,
+      align: 'center',
+      wordWrap: { width: w - sidePad * 2 },
+    }).setOrigin(0.5, 0);
+    this.subtitle = subtitle;
+    this.ui.push(subtitle);
+    this.hudTop = Math.max(subtitle.y + subtitle.height, rowY + control.md / 2) + space.xs;
+
+    const hint = crispText(this, w / 2, h - clamp(space.sm, h * 0.02, space.lg), this.hintText(), {
+      fontFamily: font.sans,
+      fontSize: `${typeScale.micro}px`,
+      color: ink.faint,
+      align: 'center',
+      wordWrap: { width: w - sidePad * 2 },
+    }).setOrigin(0.5, 1);
+    this.hint = hint;
+    this.ui.push(hint);
+    this.hudBottom = hint.y - hint.height - space.xs;
+
+    this.redraw();
+    this.card?.show(view, false);
+  }
+
+  private hintText(): string {
+    return this.gathered.size > 0
+      ? 'Drag to wander · pinch or scroll to zoom · tap a lit constellation'
+      : 'Drag to wander · pinch or scroll to zoom';
+  }
+
+  /** Where the dome opens: on tonight's constellation, else on the whole sky. */
+  private openingFigure(): SkyFigure | null {
+    const id = this.params.tonight?.constellationId;
+    return SKY_FIGURES.find((figure) => figure.id === id) ?? null;
+  }
+
+  /** Frame one constellation comfortably, or the whole sky when there is none. */
+  private frameOn(figure: SkyFigure | null): void {
+    if (!figure) {
+      this.zoom = this.fitZoom;
+      this.setCentre(SKY_BOUNDS.centre.x, SKY_BOUNDS.centre.y);
+      return;
+    }
+    const shortSide = Math.min(this.view.w, this.view.h);
+    this.setZoom((shortSide * 0.34) / Math.max(figure.radius, 0.02));
+    this.setCentre(figure.centre.x, figure.centre.y);
+  }
+
+  private frameWholeSky(): void {
+    this.velocity = { x: 0, y: 0 };
+
+    const target = { zoom: this.fitZoom, x: SKY_BOUNDS.centre.x, y: SKY_BOUNDS.centre.y };
+    const from = { zoom: this.zoom, x: this.centre.x, y: this.centre.y };
+
+    // The whole dome travelling back to its frame is movement by definition.
+    const glide = motion(this, {
+      targets: from,
+      ...target,
+      duration: duration.slow,
+      ease: ease.inOut,
+      onUpdate: () => {
+        this.zoom = from.zoom;
+        this.setCentre(from.x, from.y);
+        this.redraw();
+      },
+    });
+
+    if (!glide) {
+      this.zoom = target.zoom;
+      this.setCentre(target.x, target.y);
+      this.redraw();
+    }
+  }
+
+  /** Zoom about a point on screen, so whatever is under the fingers stays there. */
+  private zoomAt(x: number, y: number, factor: number): void {
+    const anchor = this.toMap(x, y);
+    this.setZoom(this.zoom * factor);
+    this.setCentre(anchor.x - (x - this.view.w / 2) / this.zoom, anchor.y - (y - this.view.h / 2) / this.zoom);
+    this.redraw();
+  }
+
+  /* ---------------------------------------------------------------- *
+   *  Input
+   * ---------------------------------------------------------------- */
+
+  private registerInput(): void {
+    this.input.addPointer(1); // a second finger, for pinch
+
+    this.input.on('pointerdown', this.onDown, this);
+    this.input.on('pointermove', this.onMove, this);
+    this.input.on('pointerup', this.onUp, this);
+    this.input.on('pointerupoutside', this.onUp, this);
+    this.input.on('wheel', this.onWheel, this);
+    this.input.keyboard?.on('keydown-ESC', () => this.leave());
+  }
+
+  /** The story card is pure paint, so the dome underneath has to be told to hold still. */
+  private busy(): boolean {
+    return this.card !== null;
+  }
+
+  private onDown(pointer: Phaser.Input.Pointer): void {
+    // Scene-level handlers fire wherever the press landed, so a press that began
+    // on a HUD pill must not also grab the sky — or drag it, or tap a star behind it.
+    if (this.busy() || this.input.hitTestPointer(pointer).length > 0) return;
+    this.dragging = true;
+    this.moved = 0;
+    this.downX = this.lastX = pointer.worldX;
+    this.downY = this.lastY = pointer.worldY;
+    this.lastMoveAt = performance.now();
+    this.velocity = { x: 0, y: 0 };
+  }
+
+  private onMove(pointer: Phaser.Input.Pointer): void {
+    if (this.busy()) return;
+
+    const [first, second] = [this.input.pointer1, this.input.pointer2];
+    if (first.isDown && second.isDown) {
+      this.pinch(first, second);
+      return;
+    }
+    if (!this.dragging || !pointer.isDown) return;
+
+    const dx = pointer.worldX - this.lastX;
+    const dy = pointer.worldY - this.lastY;
+    const now = performance.now();
+    const elapsed = Math.max(1, now - this.lastMoveAt);
+
+    this.moved += Math.hypot(dx, dy);
+    this.setCentre(this.centre.x - dx / this.zoom, this.centre.y - dy / this.zoom);
+
+    // Map units per millisecond, so a flick keeps the sky moving after release.
+    this.velocity = { x: -dx / this.zoom / elapsed, y: -dy / this.zoom / elapsed };
+
+    this.lastX = pointer.worldX;
+    this.lastY = pointer.worldY;
+    this.lastMoveAt = now;
+    this.redraw();
+  }
+
+  private pinch(first: Phaser.Input.Pointer, second: Phaser.Input.Pointer): void {
+    const distance = Phaser.Math.Distance.Between(
+      first.worldX,
+      first.worldY,
+      second.worldX,
+      second.worldY
+    );
+    const midX = (first.worldX + second.worldX) / 2;
+    const midY = (first.worldY + second.worldY) / 2;
+
+    if (this.pinching && this.pinchDistance > 0 && distance > 0) {
+      this.zoomAt(midX, midY, distance / this.pinchDistance);
+    }
+
+    this.pinching = true;
+    this.pinchDistance = distance;
+    this.dragging = false;
+    this.velocity = { x: 0, y: 0 };
+  }
+
+  private onUp(pointer: Phaser.Input.Pointer): void {
+    const wasPinching = this.pinching;
+    const wasDragging = this.dragging;
+
+    if (!this.input.pointer1.isDown || !this.input.pointer2.isDown) {
+      this.pinching = false;
+      this.pinchDistance = 0;
+    }
+    this.dragging = false;
+    if (this.busy() || wasPinching || !wasDragging) return;
+
+    // A flick that ended in a long pause is a hold, not a throw.
+    if (performance.now() - this.lastMoveAt > 80) this.velocity = { x: 0, y: 0 };
+
+    const travelled = Phaser.Math.Distance.Between(this.downX, this.downY, pointer.worldX, pointer.worldY);
+    if (this.moved < TAP_THRESHOLD && travelled < TAP_THRESHOLD) {
+      this.velocity = { x: 0, y: 0 };
+      this.tap(pointer.worldX, pointer.worldY);
+    }
+  }
+
+  private onWheel(pointer: Phaser.Input.Pointer, _over: unknown, _dx: number, dy: number): void {
+    if (this.busy()) return;
+    this.zoomAt(pointer.worldX, pointer.worldY, Math.exp(-dy * 0.0016));
+  }
+
+  /**
+   * A tap on a gathered constellation reopens its story. A tap on a sleeping one
+   * is answered with a flicker and nothing else — its name is still the reward
+   * for the night it comes round again.
+   */
+  private tap(x: number, y: number): void {
+    const hit = nearestStar(SKY_FIGURES, this.toMap(x, y), TAP_RADIUS / this.zoom);
+    if (!hit) return;
+
+    if (this.isLit(hit.figure)) this.openStory(hit.figure);
+    else this.flicker(this.toScreen(hit.figure.points[hit.starIndex]!));
+  }
+
+  /** A spark that will not swell is born at the size it would have swelled to. */
+  private flicker(point: MapPoint): void {
+    const spark = this.add
+      .image(point.x, point.y, TEX.starSoft)
+      .setScale(texScale(prefs.animate ? 0.16 : 0.4))
+      .setTint(color.dust)
+      .setAlpha(0.7)
+      .setDepth(2);
+
+    tween(this, {
+      targets: spark,
+      scale: texScale(0.55),
+      alpha: 0,
+      duration: duration.slow,
+      onComplete: () => spark.destroy(),
+    });
+  }
+
+  private openStory(figure: SkyFigure): void {
+    const constellation = getConstellationById(figure.id);
+    if (!constellation || this.card) return;
+
+    const night = this.gathered.get(figure.id);
+    this.card = new StoryCard(this, {
+      name: constellation.name,
+      story: constellation.story,
+      buttonLabel: 'Close',
+      onButton: () => this.closeStory(),
+      ...(night ? { note: `Revealed on TaaraNight #${night}` } : {}),
+    });
+    this.card.show(this.view, true);
+  }
+
+  /** The dome stays deaf until the card has finished leaving — see `busy`. */
+  private closeStory(): void {
+    this.card?.hide(() => {
+      this.card = null;
+    });
+  }
+
+  private leave(): void {
+    if (this.params.results) leaveTo(this, 'Results', this.params.results);
+    else leaveTo(this, 'MainMenu');
+  }
+}

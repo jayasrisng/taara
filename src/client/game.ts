@@ -1,4 +1,5 @@
 import { MainMenu } from './scenes/MainMenu';
+import { MySky } from './scenes/MySky';
 import { Play } from './scenes/Play';
 import { Results } from './scenes/Results';
 import { ConstellationDebug } from './scenes/ConstellationDebug';
@@ -6,6 +7,7 @@ import * as Phaser from 'phaser';
 import { AUTO, Game } from 'phaser';
 import { ambience } from './audio/ambience';
 import { DPR } from './ui/display';
+import { color, hex } from './ui/theme';
 
 /**
  * The canvas is a device-pixel backing store displayed at CSS size.
@@ -35,7 +37,7 @@ const StartGame = (parentId: string): Game => {
   const game = new Game({
     type: AUTO,
     parent,
-    backgroundColor: '#070b1f',
+    backgroundColor: hex(color.canvas),
     scale: {
       mode: Phaser.Scale.NONE,
       autoCenter: Phaser.Scale.NO_CENTER,
@@ -43,7 +45,7 @@ const StartGame = (parentId: string): Game => {
       height,
       zoom: 1 / DPR,
     },
-    scene: [MainMenu, Play, Results, ConstellationDebug],
+    scene: [MainMenu, Play, Results, MySky, ConstellationDebug],
   });
 
   // `NONE` never tracks the parent on its own, so we drive it. This also covers

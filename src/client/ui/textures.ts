@@ -13,6 +13,7 @@
 
 import type { Scene } from 'phaser';
 import { DPR } from './display';
+import { color } from './theme';
 
 export const TEX = {
   /** Cool white star glow, used for real/decoy stars and background stars. */
@@ -49,7 +50,9 @@ function ensureRadial(scene: Scene, key: string, size: number, color: number, fa
 
 /** Create the shared glow textures if they don't already exist. */
 export function ensureTextures(scene: Scene): void {
+  // White, not a palette colour: every caller tints this one, and a tint can
+  // only ever darken. Its colour is whatever `setTint` says it is.
   ensureRadial(scene, TEX.starSoft, 64, 0xffffff, 2.2);
-  ensureRadial(scene, TEX.spark, 40, 0xffe9c0, 1.6);
-  ensureRadial(scene, TEX.moon, 160, 0xf4f1ff, 2.6);
+  ensureRadial(scene, TEX.spark, 40, color.accentBright, 1.6);
+  ensureRadial(scene, TEX.moon, 160, color.moon, 2.6);
 }

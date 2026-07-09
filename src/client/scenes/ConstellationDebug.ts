@@ -1,6 +1,11 @@
 /**
  * Debug scene to visualize constellation data
  * This helps verify that star positions and connections look correct
+ *
+ * Reachable only by pressing D on the menu, and deliberately **not** on the
+ * design tokens in `ui/theme.ts`. Its colours are diagnostic, not decorative:
+ * a validation failure has to look like a validation failure, and a cozy
+ * indigo-on-gold error message is one nobody sees. Leave the primaries alone.
  */
 
 import { Scene, GameObjects } from 'phaser';

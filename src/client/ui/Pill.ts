@@ -6,24 +6,16 @@
  * clothes, so they all live here. A pill sizes itself to its label and repaints
  * when that label changes.
  *
- * Every default is a CSS pixel: `HEIGHT` is a comfortable thumb target on the
- * phone screens most Reddit players are holding.
+ * Every default is a CSS pixel. A pill may be drawn shorter than a fingertip —
+ * the menu's settings toggles are — but it is never *tapped* in less than one:
+ * `pressable` grows the hit area to `MIN_TAP` behind the paint.
  */
 
-import * as Phaser from 'phaser';
-import { Scene, GameObjects } from 'phaser';
+import { Scene, GameObjects, Tweens } from 'phaser';
 import { crispText } from './display';
-
-/** Big enough to tap without looking. */
-const HEIGHT = 40;
-const FONT_SIZE = 15;
-const PADDING_X = 15;
-const ACCENT = 0xffe3a3;
-
-const FILL = 0x1a2048;
-const FILL_HOVER = 0x232a58;
-const FILL_PRESS = 0x252c5c;
-const FILL_ACTIVE = 0x2b3268;
+import { crossFade, duration, tween } from './motion';
+import { pressable, tapArea } from './pressable';
+import { alpha, color, control, font, ink, space, typeScale } from './theme';
 
 export interface PillStyle {
   height?: number;
@@ -36,6 +28,7 @@ export interface PillStyle {
 export class Pill {
   readonly container: GameObjects.Container;
 
+  private scene: Scene;
   private bg: GameObjects.Graphics;
   private label: GameObjects.Text;
   private style: Required<PillStyle>;
@@ -44,20 +37,28 @@ export class Pill {
   private active = false;
   private enabled = true;
 
+  /** The paint as it is on screen right now, mid-fade included. */
+  private fill: number = color.surface;
+  private strokeAlpha: number = alpha.stroke;
+  /** Where that paint is heading, so a repeated hover does not restart the fade. */
+  private fillTarget: number = color.surface;
+  private paintTween: Tweens.Tween | null = null;
+
   constructor(scene: Scene, label: string, style: PillStyle = {}, onClick?: () => void) {
+    this.scene = scene;
     this.style = {
-      height: style.height ?? HEIGHT,
+      height: style.height ?? control.md,
       minWidth: style.minWidth ?? 0,
-      fontSize: style.fontSize ?? FONT_SIZE,
-      paddingX: style.paddingX ?? PADDING_X,
-      accent: style.accent ?? ACCENT,
+      fontSize: style.fontSize ?? typeScale.body,
+      paddingX: style.paddingX ?? space.lg,
+      accent: style.accent ?? color.accent,
     };
 
     this.bg = scene.add.graphics();
     this.label = crispText(scene, 0, 0, label, {
-      fontFamily: 'Arial',
+      fontFamily: font.sans,
       fontSize: `${this.style.fontSize}px`,
-      color: '#eef0ff',
+      color: ink.body,
     }).setOrigin(0.5);
 
     this.container = scene.add.container(0, 0, [this.bg, this.label]);
@@ -98,65 +99,101 @@ export class Pill {
   /** A tab that is currently showing, or a toggle that is on. */
   setActive(active: boolean): this {
     this.active = active;
-    this.paint(this.active ? FILL_ACTIVE : FILL);
+    this.settle();
     return this;
   }
 
-  /** A pill that has nothing left to do — dimmed, and deaf to taps. */
+  /** A pill that has nothing left to do — dimmed, deaf to taps, and no hand cursor. */
   setEnabled(enabled: boolean): this {
-    this.enabled = enabled;
-    this.container.setAlpha(enabled ? 1 : 0.45);
+    if (this.enabled !== enabled) {
+      this.enabled = enabled;
+      tween(this.scene, {
+        targets: this.container,
+        alpha: enabled ? 1 : alpha.disabled,
+        duration: duration.fast,
+      });
+    }
+    // A pill disabled mid-press (Share, the moment it is tapped) keeps its
+    // pressed paint otherwise, and never gets a release to clear it.
+    this.settle();
+    if (this.container.input) this.container.input.cursor = enabled ? 'pointer' : '';
     return this;
   }
 
   destroy(): void {
+    // The fade repaints `bg` every frame, so it must not outlive it.
+    this.paintTween?.remove();
+    this.paintTween = null;
+    this.scene.tweens.killTweensOf(this.container);
     this.container.destroy();
   }
 
   private makeInteractive(onClick: () => void): void {
-    const hit = (): Phaser.Geom.Rectangle =>
-      new Phaser.Geom.Rectangle(-this.w / 2, -this.height / 2, this.w, this.height);
+    pressable(this.scene, this.container, tapArea(this.w, this.height), {
+      onClick,
+      onHover: () => this.fadeTo(color.surfaceHover),
+      onPress: () => this.fadeTo(color.surfacePress),
+      onRest: () => this.settle(),
+      enabled: () => this.enabled,
+    });
+  }
 
-    const rest = (): void => this.paint(this.active ? FILL_ACTIVE : FILL);
+  /** Back to whatever this pill looks like when nobody is touching it. */
+  private settle(): void {
+    this.fadeTo(this.restFill());
+  }
 
-    this.container.setInteractive(hit(), Phaser.Geom.Rectangle.Contains);
-    this.container.on('pointerover', () => {
-      if (this.enabled) this.paint(FILL_HOVER);
-    });
-    this.container.on('pointerout', rest);
-    this.container.on('pointerdown', () => {
-      if (this.enabled) this.paint(FILL_PRESS);
-    });
-    this.container.on('pointerup', () => {
-      rest();
-      if (this.enabled) onClick();
-    });
+  private restFill(): number {
+    return this.active ? color.surfaceActive : color.surface;
+  }
+
+  private restStroke(): number {
+    return this.active ? alpha.strokeStrong : alpha.stroke;
+  }
+
+  /**
+   * Warm the pill towards a new fill. The border alpha rides the same curve, so
+   * a tab turning active brightens its edge as it brightens its face.
+   */
+  private fadeTo(fill: number): void {
+    const strokeTo = this.restStroke();
+    if (this.fillTarget === fill && this.strokeAlpha === strokeTo) return;
+
+    this.paintTween?.remove();
+    this.fillTarget = fill;
+
+    const fromFill = this.fill;
+    const fromStroke = this.strokeAlpha;
+    this.paintTween = crossFade(
+      this.scene,
+      fromFill,
+      fill,
+      (blended, t) => {
+        this.fill = blended;
+        this.strokeAlpha = fromStroke + (strokeTo - fromStroke) * t;
+        this.paint();
+      },
+      duration.fast
+    );
   }
 
   /** Re-measure around the label and rebuild the hit area to match. */
   private resize(): void {
     this.w = Math.max(this.style.minWidth, this.label.width + this.style.paddingX * 2);
     this.container.setSize(this.w, this.height);
-    this.paint(this.active ? FILL_ACTIVE : FILL);
+    this.paint();
 
-    if (this.container.input) {
-      this.container.input.hitArea = new Phaser.Geom.Rectangle(
-        -this.w / 2,
-        -this.height / 2,
-        this.w,
-        this.height
-      );
-    }
+    if (this.container.input) this.container.input.hitArea = tapArea(this.w, this.height);
   }
 
-  private paint(fill: number): void {
+  private paint(): void {
     const { height, accent } = this.style;
     const radius = height / 2;
 
     this.bg.clear();
-    this.bg.fillStyle(fill, 0.9);
+    this.bg.fillStyle(this.fill, alpha.fill);
     this.bg.fillRoundedRect(-this.w / 2, -height / 2, this.w, height, radius);
-    this.bg.lineStyle(1, accent, this.active ? 0.85 : 0.4);
+    this.bg.lineStyle(1, accent, this.strokeAlpha);
     this.bg.strokeRoundedRect(-this.w / 2, -height / 2, this.w, height, radius);
   }
 }

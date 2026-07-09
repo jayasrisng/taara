@@ -1,5 +1,4 @@
-import { Scene, GameObjects } from 'phaser';
-import * as Phaser from 'phaser';
+import { Scene, GameObjects, Tweens } from 'phaser';
 import { showToast } from '@devvit/web/client';
 import type { InitResponse } from '../../shared/api';
 import type { Difficulty } from '../../shared/constellations';
@@ -8,8 +7,23 @@ import { setSound } from '../audio/ambience';
 import { NightSky } from '../ui/NightSky';
 import { crispText } from '../ui/display';
 import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { crossFade, duration, enter, leave, leaveTo, motion, tween } from '../ui/motion';
 import { Pill, makePill } from '../ui/Pill';
+import { pressable, tapArea } from '../ui/pressable';
 import { prefs } from '../ui/prefs';
+import {
+  alpha,
+  color,
+  control,
+  difficulty as difficultyColor,
+  font,
+  glow,
+  hex,
+  ink,
+  radius,
+  space,
+  typeScale,
+} from '../ui/theme';
 import { fetchInit, postComplete } from '../api';
 
 interface DiffDef {
@@ -21,9 +35,21 @@ interface DiffDef {
 }
 
 const DIFFICULTIES: DiffDef[] = [
-  { label: 'Easy', value: 'easy', blurb: 'The outline is shown · no Glitches', color: 0xbfe6c9, dots: 1 },
-  { label: 'Medium', value: 'medium', blurb: 'No outline · a few Glitches · 3 Whispers', color: 0xffe3a3, dots: 2 },
-  { label: 'Hard', value: 'hard', blurb: 'No star count · many Glitches · a soft timer', color: 0xffb3b3, dots: 3 },
+  { label: 'Easy', value: 'easy', blurb: 'The outline is shown · no Glitches', color: difficultyColor.easy, dots: 1 },
+  {
+    label: 'Medium',
+    value: 'medium',
+    blurb: 'No outline · a few Glitches · 3 Whispers',
+    color: difficultyColor.medium,
+    dots: 2,
+  },
+  {
+    label: 'Hard',
+    value: 'hard',
+    blurb: 'No star count · many Glitches · a soft timer',
+    color: difficultyColor.hard,
+    dots: 3,
+  },
 ];
 
 /** Never let a card shrink below a comfortable thumb. */
@@ -44,9 +70,6 @@ const NIGHT_WAIT_MS = 1500;
 
 /** Holds the community line's place while the server is still answering. */
 const LISTENING = 'Listening for tonight’s sky…';
-
-/** The two comfort settings, small and out of the way at the foot of the menu. */
-const TOGGLE_H = 34;
 
 export class MainMenu extends Scene {
   private sky!: NightSky;
@@ -87,6 +110,9 @@ export class MainMenu extends Scene {
 
     this.input.keyboard?.on('keydown-D', () => this.scene.start('ConstellationDebug'));
     this.input.keyboard?.on('keydown-J', () => void this.rehearseLastNight());
+
+    // The menu rises out of the same night the splash screen left behind.
+    enter(this);
   }
 
   /** Rebuild at the current size, after content (not the viewport) changed. */
@@ -145,7 +171,7 @@ export class MainMenu extends Scene {
     }
     if (!this.scene.isActive()) return;
 
-    this.scene.start('Play', { difficulty, night: this.night });
+    leaveTo(this, 'Play', { difficulty, night: this.night });
   }
 
   /**
@@ -190,38 +216,37 @@ export class MainMenu extends Scene {
     this.ui.forEach((o) => o.destroy());
     this.ui = [];
 
-    const sidePad = clamp(14, w * 0.05, 32);
+    const sidePad = clamp(space.md, w * 0.05, space.xxl);
     const dense = h < DENSE_H;
     const narrow = w < NARROW_W;
     const textWidth = w - sidePad * 2;
 
     /* ---- top block, flowing down ---- */
 
-    let top = clamp(14, h * 0.05, 44);
+    let top = clamp(space.lg, h * 0.05, control.lg);
 
     const title = crispText(this, w / 2, top, 'TaaraNight', {
-      fontFamily: 'Georgia, "Times New Roman", serif',
-      fontSize: `${clamp(28, Math.min(w * 0.12, h * 0.08), 54)}px`,
-      color: '#f7f4ff',
+      fontFamily: font.serif,
+      fontSize: `${clamp(typeScale.display, Math.min(w * 0.12, h * 0.08), typeScale.giant)}px`,
+      color: ink.bright,
     }).setOrigin(0.5, 0);
-    title.setShadow(0, 0, '#8aa0ff', 18, true, true);
+    title.setShadow(0, 0, hex(color.starlight), glow.strong, true, true);
     this.ui.push(title);
-    top += title.height + clamp(6, h * 0.012, 12);
+    top += title.height + clamp(space.xs, h * 0.012, space.md);
 
-    const pillH = 32;
     const when = this.isArchive() ? 'An older sky' : 'Tonight';
-    const pill = makePill(this, w / 2, top + pillH / 2, `🌙  ${when} · TaaraNight #${this.night}`, {
-      height: pillH,
-      paddingX: 17,
+    const pill = makePill(this, w / 2, top + control.sm / 2, `🌙  ${when} · TaaraNight #${this.night}`, {
+      height: control.sm,
+      paddingX: space.lg,
     });
     this.ui.push(pill.container);
-    top += pillH;
+    top += control.sm;
 
     if (!dense) {
-      const prompt = crispText(this, w / 2, top + clamp(10, h * 0.022, 20), 'Choose your night', {
-        fontFamily: 'Georgia, serif',
-        fontSize: '18px',
-        color: '#c9cff0',
+      const prompt = crispText(this, w / 2, top + clamp(space.sm, h * 0.022, space.xl - space.xs), 'Choose your night', {
+        fontFamily: font.serif,
+        fontSize: `${typeScale.lead}px`,
+        color: ink.muted,
         fontStyle: 'italic',
       }).setOrigin(0.5, 0);
       this.ui.push(prompt);
@@ -230,40 +255,52 @@ export class MainMenu extends Scene {
 
     /* ---- bottom block, flowing up ---- */
 
-    let bottom = h - clamp(12, h * 0.03, 28);
+    let bottom = h - clamp(space.md, h * 0.03, space.xl + space.xs);
 
     const footer = crispText(this, w / 2, bottom, 'A new sky unlocks every night at 6 PM', {
-      fontFamily: 'Arial',
-      fontSize: '13px',
-      color: '#7883b0',
+      fontFamily: font.sans,
+      fontSize: `${typeScale.caption}px`,
+      color: ink.faint,
       align: 'center',
       wordWrap: { width: textWidth },
     }).setOrigin(0.5, 1);
     this.ui.push(footer);
-    bottom -= footer.height + 10;
+    bottom -= footer.height + space.sm;
 
-    bottom = this.buildSettings(w, bottom) - 10;
+    // The gap has to clear `MIN_TAP - control.sm`: both rows are drawn 32 tall
+    // but tap 44 tall, and two hit areas that touch let the wrong one win a thumb
+    // landing on the seam.
+    bottom = this.buildSettings(w, bottom) - space.lg;
+
+    // My Sky is reachable without solving anything: the dome is worth looking at
+    // even when it is still dark.
+    const mySky = new Pill(this, '✨  My Sky', { height: control.sm, fontSize: typeScale.caption }, () =>
+      leaveTo(this, 'MySky', {})
+    );
+    mySky.setPosition(w / 2, bottom - control.sm / 2);
+    this.ui.push(mySky.container);
+    bottom -= control.sm + space.sm;
 
     if (this.communityLine) {
       const community = crispText(this, w / 2, bottom, this.communityLine, {
-        fontFamily: 'Arial',
-        fontSize: '14px',
-        color: '#a7b0da',
+        fontFamily: font.sans,
+        fontSize: `${typeScale.body}px`,
+        color: ink.muted,
         align: 'center',
         wordWrap: { width: textWidth },
       }).setOrigin(0.5, 1);
       this.ui.push(community);
-      bottom -= community.height + 6;
+      bottom -= community.height + space.xs;
     }
 
     /* ---- the cards take what is left ---- */
 
-    const edge = clamp(10, h * 0.025, 28);
+    const edge = clamp(space.sm, h * 0.025, space.xl + space.xs);
     const midTop = top + edge;
     const midH = Math.max(MIN_CARD_H, bottom - edge - midTop);
     const cardW = Math.min(textWidth, 460);
 
-    let gap = clamp(8, h * 0.018, 18);
+    let gap = clamp(space.sm, h * 0.018, space.lg);
     let cards = this.buildCards(cardW, midH, gap, narrow, false);
 
     // Two-line blurbs can push the stack past the space we reserved on a very
@@ -271,7 +308,7 @@ export class MainMenu extends Scene {
     // up their blurb — the label and the dots still say everything essential.
     if (stackHeight(cards, gap) > midH) {
       cards.forEach((c) => c.destroy());
-      gap = 8;
+      gap = space.sm;
       cards = this.buildCards(cardW, midH, gap, narrow, true);
     }
 
@@ -282,15 +319,17 @@ export class MainMenu extends Scene {
       y += card.height + gap;
       this.ui.push(card);
 
-      if (!this.entered && prefs.animate) {
-        card.setAlpha(0).setY(centreY + 24);
-        this.tweens.add({
+      // The three cards deal themselves in. Under stillness they only brighten:
+      // `tween` drops the rise and leaves each card where it was placed.
+      if (!this.entered) {
+        card.setAlpha(0);
+        if (prefs.animate) card.setY(centreY + space.xl);
+        tween(this, {
           targets: card,
           alpha: 1,
           y: centreY,
-          duration: 460,
-          delay: 120 + i * 90,
-          ease: 'Back.out',
+          duration: duration.slow,
+          delay: duration.micro * (1 + i),
         });
       }
     });
@@ -303,8 +342,8 @@ export class MainMenu extends Scene {
    * edge, so the cards above know how much room they still have.
    */
   private buildSettings(w: number, bottom: number): number {
-    const style = { height: TOGGLE_H, fontSize: 12, paddingX: 12 };
-    const y = bottom - TOGGLE_H / 2;
+    const style = { height: control.sm, fontSize: typeScale.caption, paddingX: space.md };
+    const y = bottom - control.sm / 2;
 
     const sound = new Pill(this, soundLabel(), style, () => this.toggleSound());
     sound.setActive(prefs.sound);
@@ -313,13 +352,13 @@ export class MainMenu extends Scene {
     const motion = new Pill(this, motionLabel(), style, () => this.toggleMotion());
     motion.setActive(prefs.animate);
 
-    const gap = 10;
+    const gap = space.sm;
     const rowW = sound.width + gap + motion.width;
     sound.setPosition(w / 2 - rowW / 2 + sound.width / 2, y);
     motion.setPosition(w / 2 + rowW / 2 - motion.width / 2, y);
 
     this.ui.push(sound.container, motion.container);
-    return bottom - TOGGLE_H;
+    return bottom - control.sm;
   }
 
   /** The label changes in place: a whole re-layout for one word would flicker. */
@@ -331,11 +370,12 @@ export class MainMenu extends Scene {
   /**
    * Stillness has to be chosen before the sky is built — the twinkles and the
    * shooting stars are looping tweens started in `NightSky`'s constructor — so
-   * the menu rebuilds itself around the new answer.
+   * the menu rebuilds itself around the new answer. It fades on the way, because
+   * a screen that blinks is a poor advertisement for a calmer setting.
    */
   private toggleMotion(): void {
     prefs.set({ reducedMotion: !prefs.reducedMotion });
-    this.scene.restart();
+    leave(this, () => this.scene.restart());
   }
 
   private buildCards(
@@ -360,58 +400,75 @@ export class MainMenu extends Scene {
     narrow: boolean,
     hideBlurb: boolean
   ): GameObjects.Container {
-    const radius = 18;
-    const padX = narrow ? 18 : 26;
-    const padY = 14;
+    const padX = narrow ? space.lg + space.xs : space.xl + space.xs;
+    const padY = space.md;
     const showChevron = !narrow;
 
     // Right-hand column: three dots, and a chevron when there is room for one.
-    const dotStep = 15;
+    const dotStep = space.lg;
     const dotRight = w / 2 - padX;
     const firstDot = dotRight - dotStep * 2;
-    const dotsLeft = firstDot - 5;
-    const chevronX = dotsLeft - 18;
-    const textRight = showChevron ? chevronX - 14 : dotsLeft - 12;
+    const dotsLeft = firstDot - space.xs;
+    const chevronX = dotsLeft - space.lg;
+    const textRight = (showChevron ? chevronX : dotsLeft) - space.md;
     const textLeft = -w / 2 + padX;
     const textW = Math.max(60, textRight - textLeft);
 
     const label = crispText(this, textLeft, 0, d.label, {
-      fontFamily: 'Georgia, serif',
-      fontSize: `${narrow ? 20 : 24}px`,
-      color: rgbHex(d.color),
+      fontFamily: font.serif,
+      fontSize: `${narrow ? typeScale.title : typeScale.heading}px`,
+      color: hex(d.color),
     }).setOrigin(0, 0);
 
     const blurb = hideBlurb
       ? null
       : crispText(this, textLeft, 0, d.blurb, {
-          fontFamily: 'Arial',
-          fontSize: `${narrow ? 12 : 13}px`,
-          color: '#aeb6e0',
+          fontFamily: font.sans,
+          fontSize: `${typeScale.caption}px`,
+          color: ink.muted,
           wordWrap: { width: textW },
         }).setOrigin(0, 0);
 
-    const contentH = label.height + (blurb ? 4 + blurb.height : 0);
+    const contentH = label.height + (blurb ? space.xs + blurb.height : 0);
     const h = Math.max(targetH, contentH + padY * 2);
 
     label.setY(-contentH / 2);
-    blurb?.setY(-contentH / 2 + label.height + 4);
+    blurb?.setY(-contentH / 2 + label.height + space.xs);
 
     const bg = this.add.graphics();
-    const paint = (fill: number, fillAlpha: number, lineAlpha: number): void => {
+    const paint = (fill: number, lineAlpha: number): void => {
       bg.clear();
-      bg.fillStyle(fill, fillAlpha);
-      bg.fillRoundedRect(-w / 2, -h / 2, w, h, radius);
+      bg.fillStyle(fill, alpha.fill);
+      bg.fillRoundedRect(-w / 2, -h / 2, w, h, radius.card);
       bg.lineStyle(1.5, d.color, lineAlpha);
-      bg.strokeRoundedRect(-w / 2, -h / 2, w, h, radius);
+      bg.strokeRoundedRect(-w / 2, -h / 2, w, h, radius.card);
     };
-    paint(0x1b2149, 0.9, 0.35);
+    paint(color.surface, alpha.stroke);
+
+    // The card warms towards a fill rather than snapping to it; its border rides
+    // the same curve. `shade` is the colour as it is now, so a thumb that leaves
+    // mid-fade turns around from wherever the paint had got to.
+    // Widened from the literal `color` tokens: these are values that travel.
+    let shade: number = color.surface;
+    let edge: number = alpha.stroke;
+    let fading: Tweens.Tween | null = null;
+    const paintTo = (fill: number, lineAlpha: number): void => {
+      fading?.remove();
+      const fromShade = shade;
+      const fromEdge = edge;
+      fading = crossFade(this, fromShade, fill, (blended, t) => {
+        shade = blended;
+        edge = fromEdge + (lineAlpha - fromEdge) * t;
+        paint(shade, edge);
+      });
+    };
 
     // Filled from the left, so Easy lights one dot and Hard lights three.
     const dots: GameObjects.Arc[] = [];
     for (let i = 0; i < 3; i++) {
       const filled = i < d.dots;
       const dot = this.add.circle(firstDot + i * dotStep, 0, 5, d.color, filled ? 1 : 0.22);
-      if (!filled) dot.setStrokeStyle(1, d.color, 0.4);
+      if (!filled) dot.setStrokeStyle(1, d.color, alpha.stroke);
       dots.push(dot);
     }
 
@@ -420,32 +477,33 @@ export class MainMenu extends Scene {
     if (showChevron) {
       parts.push(
         crispText(this, chevronX, 0, '›', {
-          fontFamily: 'Arial',
-          fontSize: '26px',
-          color: '#aeb6e0',
+          fontFamily: font.sans,
+          fontSize: `${typeScale.display}px`,
+          color: ink.muted,
         }).setOrigin(0.5)
       );
     }
 
     const container = this.add.container(0, 0, parts);
     container.setSize(w, h);
-    container.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -h / 2, w, h), Phaser.Geom.Rectangle.Contains);
+    // A rebuild on resize drops the card; the fade must not repaint its ghost.
+    container.once(GameObjects.Events.DESTROY, () => fading?.remove());
 
-    const press = (): void => {
-      paint(0x252c5c, 0.96, 0.7);
-      if (prefs.animate) this.tweens.add({ targets: container, scale: 0.97, duration: 90, ease: 'Sine.out' });
-    };
-    const release = (): void => {
-      paint(0x1b2149, 0.9, 0.35);
-      if (prefs.animate) this.tweens.add({ targets: container, scale: 1, duration: 120, ease: 'Sine.out' });
+    const scaleTo = (value: number, ms: number): void => {
+      motion(this, { targets: container, scale: value, duration: ms });
     };
 
-    container.on('pointerover', () => paint(0x232a58, 0.95, 0.6));
-    container.on('pointerout', () => release());
-    container.on('pointerdown', () => press());
-    container.on('pointerup', () => {
-      release();
-      void this.openPlay(d.value);
+    pressable(this, container, tapArea(w, h), {
+      onClick: () => void this.openPlay(d.value),
+      onHover: () => paintTo(color.surfaceHover, alpha.strokeStrong),
+      onPress: () => {
+        paintTo(color.surfacePress, alpha.strokeStrong);
+        scaleTo(0.97, duration.micro);
+      },
+      onRest: () => {
+        paintTo(color.surface, alpha.stroke);
+        scaleTo(1, duration.fast);
+      },
     });
 
     return container;
@@ -467,11 +525,6 @@ function soundLabel(): string {
 
 function motionLabel(): string {
   return prefs.animate ? '✨  Motion' : '🌙  Stillness';
-}
-
-/** Convert a 0xRRGGBB number to a "#rrggbb" CSS string for Text colors. */
-function rgbHex(color: number): string {
-  return '#' + color.toString(16).padStart(6, '0');
 }
 
 /** The soft community line under the difficulty cards. Never shames an empty sky. */

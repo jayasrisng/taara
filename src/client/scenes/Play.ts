@@ -22,30 +22,18 @@ import { NightSky } from '../ui/NightSky';
 import { Onboarding, needsOnboarding } from '../ui/Onboarding';
 import { crispText, texScale } from '../ui/display';
 import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { duration, ease, enter, leaveTo, motion, tween } from '../ui/motion';
 import { Pill } from '../ui/Pill';
+import { MIN_TAP } from '../ui/pressable';
 import { prefs } from '../ui/prefs';
+import { StoryCard } from '../ui/StoryCard';
+import { alpha, color, control, font, ink, space, typeScale } from '../ui/theme';
 import { TEX } from '../ui/textures';
 import { postComplete } from '../api';
 import type { CompleteResponse } from '../../shared/api';
 import type { ResultsData } from './Results';
 
-const COLORS = {
-  starCore: 0xfff6e0,
-  starGlow: 0xbcd0ff,
-  lineCore: 0xffe9c0,
-  lineGlow: 0xffd27f,
-  glitch: 0x7ff0ff,
-  outline: 0x6c7fbb,
-  accent: 0xffe3a3,
-  wrong: 0xff8f9a,
-  text: '#f5f3ff',
-  textMuted: '#a7b0da',
-  accentText: '#ffe3a3',
-};
-
 const TAP_THRESHOLD = 12;
-/** Tall enough to be a comfortable thumb target on mobile. Matches `Pill`'s default. */
-const PILL_H = 40;
 /** Wide enough that a two-digit-minute timer never grows the pill mid-solve. */
 const TIMER_W = 78;
 /** Below this width the HUD stacks its title under the pill row. */
@@ -116,7 +104,7 @@ export class Play extends Scene {
   private backPill!: Pill;
   private soundPill!: Pill;
   private whisperPill!: Pill;
-  private storyCard: GameObjects.Container | null = null;
+  private storyCard: StoryCard | null = null;
 
   /** The three opening hints, on a first-ever play. Blocks the sky until read. */
   private tutorial: Onboarding | null = null;
@@ -133,6 +121,8 @@ export class Play extends Scene {
   private downY = 0;
   private dragging = false;
   private selectedStar: StarView | null = null;
+  /** This press landed on a HUD pill, so the sky underneath must ignore it. */
+  private hudPress = false;
 
   // Status.
   private complete = false;
@@ -164,6 +154,7 @@ export class Play extends Scene {
     this.downStar = null;
     this.selectedStar = null;
     this.dragging = false;
+    this.hudPress = false;
     this.complete = false;
     this.lastShownSecond = -1;
     this.glowPulse = 0;
@@ -208,7 +199,7 @@ export class Play extends Scene {
     this.registerInput();
 
     // Gentle entrance.
-    this.cameras.main.fadeIn(500, 5, 6, 15);
+    enter(this);
   }
 
   override update(): void {
@@ -229,43 +220,45 @@ export class Play extends Scene {
       const glow = this.add
         .image(0, 0, TEX.starSoft)
         .setScale(texScale(0.42))
-        .setTint(COLORS.starGlow)
+        .setTint(color.starGlow)
         .setAlpha(0.55);
-      const core = this.add.image(0, 0, TEX.starSoft).setScale(texScale(0.18)).setTint(COLORS.starCore);
+      const core = this.add.image(0, 0, TEX.starSoft).setScale(texScale(0.18)).setTint(color.starCore);
       const container = this.add.container(0, 0, [glow, core]);
       const view: StarView = { data, container, glow, core };
       this.starViews.push(view);
       this.byId.set(data.id, view);
 
-      if (!prefs.animate) return;
-      this.tweens.add({
+      // Each star breathes at its own tempo, so the field never pulses in unison.
+      motion(this, {
         targets: glow,
         scale: texScale(0.5),
         alpha: 0.35,
-        duration: 1700 + (data.id % 6) * 240,
+        duration: duration.breath * (1 + (data.id % 6) * 0.14),
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.inOut',
+        ease: ease.inOut,
       });
     });
   }
 
   private createHud(): void {
     this.titleText = crispText(this, 0, 0, this.puzzle.label, {
-      fontFamily: 'Georgia, serif',
-      fontSize: '20px',
-      color: COLORS.text,
+      fontFamily: font.serif,
+      fontSize: `${typeScale.title}px`,
+      color: ink.bright,
     }).setOrigin(0.5);
 
     this.hintText = crispText(this, 0, 0, this.buildHintLabel(), {
-      fontFamily: 'Arial',
-      fontSize: '14px',
-      color: COLORS.textMuted,
+      fontFamily: font.sans,
+      fontSize: `${typeScale.body}px`,
+      color: ink.muted,
     }).setOrigin(0.5);
 
-    this.backPill = new Pill(this, '‹ Back', { minWidth: 72 }, () => this.scene.start('MainMenu'));
+    this.backPill = new Pill(this, '‹ Back', { minWidth: 72 }, () => leaveTo(this, 'MainMenu'));
 
-    this.soundPill = new Pill(this, soundIcon(), { minWidth: PILL_H, paddingX: 8 }, () => this.toggleSound());
+    this.soundPill = new Pill(this, soundIcon(), { minWidth: control.md, paddingX: space.sm }, () =>
+      this.toggleSound()
+    );
     this.soundPill.setActive(prefs.sound);
 
     this.timerPill = new Pill(this, '0:00', { minWidth: TIMER_W });
@@ -309,41 +302,42 @@ export class Play extends Scene {
     const { w, h } = view;
     this.sky.layout(view);
 
-    const sidePad = clamp(12, w * 0.045, 28);
-    const topPad = clamp(10, h * 0.022, 18);
-    const rowY = topPad + PILL_H / 2;
+    const sidePad = clamp(space.md, w * 0.045, space.xl + space.xs);
+    const topPad = clamp(space.sm, h * 0.022, space.lg);
+    const rowY = topPad + control.md / 2;
 
-    const controlGap = 8;
+    const controlGap = space.sm;
     this.backPill.setPosition(sidePad + this.backPill.width / 2, rowY);
     this.soundPill.setPosition(sidePad + this.backPill.width + controlGap + this.soundPill.width / 2, rowY);
     this.timerPill.setPosition(w - sidePad - this.timerPill.width / 2, rowY);
 
-    this.titleText.setFontSize(w < NARROW_W ? 17 : 20);
-    this.hintText.setFontSize(w < NARROW_W ? 12 : 14);
+    this.titleText.setFontSize(w < NARROW_W ? typeScale.lead : typeScale.title);
+    this.hintText.setFontSize(w < NARROW_W ? typeScale.caption : typeScale.body);
     this.hintText.setWordWrapWidth(w - sidePad * 2);
 
     const leftGroup = this.backPill.width + controlGap + this.soundPill.width;
     const flank = Math.max(leftGroup, this.puzzle.params.timed ? this.timerPill.width : 0);
-    // The 32 is breathing room: a title that only *just* clears the pills reads
+    // The breathing room is real: a title that only *just* clears the pills reads
     // as a collision even when it technically isn't.
-    const inline = this.titleText.width <= w - 2 * (sidePad + flank) - 32;
+    const inline = this.titleText.width <= w - 2 * (sidePad + flank) - space.xxl;
 
-    const titleY = inline ? rowY : topPad + PILL_H + 10 + this.titleText.height / 2;
+    const titleY = inline ? rowY : topPad + control.md + space.sm + this.titleText.height / 2;
     this.titleText.setPosition(w / 2, titleY);
-    this.hintText.setPosition(w / 2, titleY + this.titleText.height / 2 + 4 + this.hintText.height / 2);
+    this.hintText.setPosition(w / 2, titleY + this.titleText.height / 2 + space.xs + this.hintText.height / 2);
 
-    const topBar = this.hintText.y + this.hintText.height / 2 + clamp(8, h * 0.02, 18);
+    const topBar = this.hintText.y + this.hintText.height / 2 + clamp(space.sm, h * 0.02, space.lg);
 
-    const bottomPad = clamp(10, h * 0.022, 18);
+    const bottomPad = clamp(space.sm, h * 0.022, space.lg);
     const whisperVisible = this.whisperPill.visible;
-    if (whisperVisible) this.whisperPill.setPosition(w / 2, h - bottomPad - PILL_H / 2);
-    const bottomBar = whisperVisible ? bottomPad + PILL_H + 12 : bottomPad + 8;
+    if (whisperVisible) this.whisperPill.setPosition(w / 2, h - bottomPad - control.md / 2);
+    const bottomBar = whisperVisible ? bottomPad + control.md + space.md : bottomPad + space.sm;
 
     const avail = Math.max(120, h - topBar - bottomBar);
     const size = Math.min(w - sidePad * 2, avail);
     const ox = (w - size) / 2;
     const oy = topBar + (avail - size) / 2;
-    this.hitR = clamp(20, this.starGap * size * 0.6, 34);
+    // Never below a fingertip's radius, however tightly this constellation packs.
+    this.hitR = clamp(MIN_TAP / 2, this.starGap * size * 0.6, 34);
 
     for (const sv of this.starViews) {
       sv.container.setPosition(ox + sv.data.x * size, oy + sv.data.y * size);
@@ -354,11 +348,11 @@ export class Play extends Scene {
 
     if (this.overlay) {
       this.overlay.clear();
-      this.overlay.fillStyle(0x03040c, 0.5);
+      this.overlay.fillStyle(color.void, alpha.veil);
       this.overlay.fillRect(0, 0, w, h);
     }
     // The card wraps its story to the viewport, so a resize has to rebuild it.
-    if (this.storyCard) this.showStoryCard(true);
+    this.storyCard?.show(view, false);
     this.tutorial?.layout(view);
   }
 
@@ -383,9 +377,9 @@ export class Play extends Scene {
       const a = this.byId.get(edge.from);
       const b = this.byId.get(edge.to);
       if (!a || !b) continue;
-      this.outlineGfx.lineStyle(9, COLORS.outline, 0.16);
+      this.outlineGfx.lineStyle(9, color.outline, 0.16);
       this.outlineGfx.lineBetween(a.container.x, a.container.y, b.container.x, b.container.y);
-      this.outlineGfx.lineStyle(2, COLORS.outline, 0.8);
+      this.outlineGfx.lineStyle(2, color.outline, 0.8);
       this.outlineGfx.lineBetween(a.container.x, a.container.y, b.container.x, b.container.y);
     }
   }
@@ -398,9 +392,9 @@ export class Play extends Scene {
       const ay = e.a.container.y;
       const ex = ax + (e.b.container.x - ax) * e.progress;
       const ey = ay + (e.b.container.y - ay) * e.progress;
-      this.connectionGfx.lineStyle(this.complete ? 15 : 11, COLORS.lineGlow, 0.1 + 0.22 * pulse);
+      this.connectionGfx.lineStyle(this.complete ? 15 : 11, color.accentGlow, 0.1 + 0.22 * pulse);
       this.connectionGfx.lineBetween(ax, ay, ex, ey);
-      this.connectionGfx.lineStyle(3, COLORS.lineCore, 0.95);
+      this.connectionGfx.lineStyle(3, color.accentBright, 0.95);
       this.connectionGfx.lineBetween(ax, ay, ex, ey);
     }
   }
@@ -409,7 +403,7 @@ export class Play extends Scene {
     const target = this.starAt(x, y);
     const end = target && target !== from ? { x: target.container.x, y: target.container.y } : { x, y };
     this.rubberGfx.clear();
-    this.rubberGfx.lineStyle(3, COLORS.lineCore, 0.55);
+    this.rubberGfx.lineStyle(3, color.accentBright, 0.55);
     this.rubberGfx.lineBetween(from.container.x, from.container.y, end.x, end.y);
   }
 
@@ -418,10 +412,20 @@ export class Play extends Scene {
    * ---------------------------------------------------------------- */
 
   private registerInput(): void {
-    this.input.on('pointerdown', this.onPointerDown, this);
-    this.input.on('pointermove', this.onPointerMove, this);
-    this.input.on('pointerup', this.onPointerUp, this);
-    this.input.keyboard?.on('keydown-ESC', () => this.scene.start('MainMenu'));
+    this.input.on(Phaser.Input.Events.POINTER_DOWN, this.onPointerDown, this);
+    this.input.on(Phaser.Input.Events.POINTER_MOVE, this.onPointerMove, this);
+    this.input.on(Phaser.Input.Events.POINTER_UP, this.onPointerUp, this);
+    // A finger lifted off the edge of the canvas never reports a `pointerup`,
+    // and would otherwise leave a rubber band hanging from a star forever.
+    this.input.on(Phaser.Input.Events.POINTER_UP_OUTSIDE, this.cancelDrag, this);
+    this.input.keyboard?.on('keydown-ESC', () => leaveTo(this, 'MainMenu'));
+  }
+
+  private cancelDrag(): void {
+    this.rubberGfx.clear();
+    this.downStar = null;
+    this.dragging = false;
+    this.hudPress = false;
   }
 
   private starAt(x: number, y: number): StarView | null {
@@ -444,6 +448,13 @@ export class Play extends Scene {
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.busy()) return;
+
+    // These handlers are scene-level, so they also fire for a press that landed
+    // on a HUD pill. Such a press belongs to the pill alone: it must not grab a
+    // star sitting behind it, nor quietly drop the star already selected.
+    this.hudPress = this.input.hitTestPointer(pointer).length > 0;
+    if (this.hudPress) return;
+
     const s = this.starAt(pointer.worldX, pointer.worldY);
     this.downStar = s;
     this.downX = pointer.worldX;
@@ -454,7 +465,7 @@ export class Play extends Scene {
   }
 
   private onPointerMove(pointer: Phaser.Input.Pointer): void {
-    if (this.busy()) return;
+    if (this.busy() || this.hudPress) return;
     if (this.dragging && this.downStar) this.drawRubber(this.downStar, pointer.worldX, pointer.worldY);
   }
 
@@ -463,6 +474,10 @@ export class Play extends Scene {
     const down = this.downStar;
     this.downStar = null;
     this.dragging = false;
+    if (this.hudPress) {
+      this.hudPress = false;
+      return;
+    }
     if (this.busy()) return;
 
     const moved = Phaser.Math.Distance.Between(this.downX, this.downY, pointer.worldX, pointer.worldY);
@@ -494,16 +509,29 @@ export class Play extends Scene {
   private selectStar(sv: StarView): void {
     this.clearSelection();
     this.selectedStar = sv;
-    sv.glow.setAlpha(0.9);
-    this.tweens.add({ targets: sv.container, scale: 1.25, duration: 160, ease: 'Sine.out' });
+    this.glowTo(sv, 0.9);
+    motion(this, { targets: sv.container, scale: 1.25, duration: duration.fast });
   }
 
   private clearSelection(): void {
     const sv = this.selectedStar;
     this.selectedStar = null;
     if (!sv) return;
-    sv.glow.setAlpha(0.55);
-    this.tweens.add({ targets: sv.container, scale: 1, duration: 160, ease: 'Sine.out' });
+    this.glowTo(sv, 0.55);
+    motion(this, { targets: sv.container, scale: 1, duration: duration.fast });
+  }
+
+  /**
+   * The halo of a star picked up or put down.
+   *
+   * Under motion the star's own twinkle loop owns `glow.alpha` and reclaims it
+   * the very next frame, so the swell is the cue and this stays out of the way.
+   * Under stillness there is no loop and no swell — the halo is the only cue
+   * left, which is exactly why it may not snap on.
+   */
+  private glowTo(sv: StarView, halo: number): void {
+    if (prefs.animate) return;
+    tween(this, { targets: sv.glow, alpha: halo, duration: duration.fast });
   }
 
   /* ---------------------------------------------------------------- *
@@ -521,21 +549,23 @@ export class Play extends Scene {
 
     if (this.solutionSet.has(key)) {
       this.connected.add(key);
-      const edge: Edge = { a, b, progress: prefs.animate ? 0 : 1 };
+      const edge: Edge = { a, b, progress: 0 };
       this.edges.push(edge);
-      if (prefs.animate) {
-        this.tweens.add({
-          targets: edge,
-          progress: 1,
-          duration: 260,
-          ease: 'Sine.out',
-          onUpdate: () => this.redrawConnections(),
-        });
-      } else {
+
+      // A thread reaching from one star to the other is travel, so under
+      // stillness it is simply already there.
+      const draw = motion(this, {
+        targets: edge,
+        progress: 1,
+        duration: duration.base,
+        onUpdate: () => this.redrawConnections(),
+      });
+      if (!draw) {
+        edge.progress = 1;
         this.redrawConnections();
       }
-      // One step up the scale per thread drawn: the sound of getting somewhere.
-      ambience.chime(this.connected.size - 1);
+      // A star falls across the sky, a step brighter for each thread drawn.
+      ambience.connect(this.connected.size - 1);
       this.pulseStar(a);
       this.pulseStar(b);
       if (this.connected.size === this.puzzle.solution.length) this.onComplete();
@@ -545,82 +575,77 @@ export class Play extends Scene {
   }
 
   private pulseStar(sv: StarView): void {
-    if (prefs.animate) {
-      this.tweens.add({ targets: sv.container, scale: 1.4, duration: 130, yoyo: true, ease: 'Sine.out' });
-    }
-    this.flashRing(sv, COLORS.accent);
+    motion(this, { targets: sv.container, scale: 1.4, duration: duration.micro, yoyo: true });
+    this.flashRing(sv, color.accent);
   }
 
   /**
    * A ring blooming outward, or — when the player has asked for stillness — the
-   * same light arriving and leaving without going anywhere.
+   * same light arriving and leaving without going anywhere. A ring that will not
+   * swell is born at the size it would have swelled to, since `tween` drops the
+   * `scale` and leaves it wherever it was put.
    */
-  private flashRing(sv: StarView, color: number): void {
+  private flashRing(sv: StarView, tint: number): void {
     const ring = this.add
       .image(sv.container.x, sv.container.y, TEX.starSoft)
       .setScale(texScale(prefs.animate ? 0.2 : 0.6))
-      .setTint(color)
+      .setTint(tint)
       .setAlpha(0.7);
-    this.tweens.add({
+    tween(this, {
       targets: ring,
-      ...(prefs.animate ? { scale: texScale(0.9) } : {}),
+      scale: texScale(0.9),
       alpha: 0,
-      duration: 420,
-      ease: 'Sine.out',
+      duration: duration.slow,
       onComplete: () => ring.destroy(),
     });
   }
 
   private wrongFeedback(a: StarView, b: StarView): void {
     if (a.data.isDecoy || b.data.isDecoy) this.glitchHits++;
-    if (prefs.animate) {
-      this.shakeStar(a);
-      this.shakeStar(b);
-      this.cameras.main.shake(120, 0.003);
-    }
+    this.shakeStar(a);
+    this.shakeStar(b);
+    if (prefs.animate) this.cameras.main.shake(duration.micro, 0.003);
+
     if (a.data.isDecoy) this.glitchShimmer(a);
-    else this.flashRing(a, COLORS.wrong);
+    else this.flashRing(a, color.wrong);
     if (b.data.isDecoy) this.glitchShimmer(b);
-    else this.flashRing(b, COLORS.wrong);
+    else this.flashRing(b, color.wrong);
   }
 
   private shakeStar(sv: StarView): void {
     const baseX = sv.container.x;
-    this.tweens.add({
+    motion(this, {
       targets: sv.container,
       x: baseX + 7,
-      duration: 55,
+      duration: duration.tremor,
       yoyo: true,
       repeat: 2,
-      ease: 'Sine.inOut',
+      ease: ease.inOut,
       onComplete: () => sv.container.setX(baseX),
     });
   }
 
   private glitchShimmer(sv: StarView): void {
-    sv.core.setTint(COLORS.glitch);
-    sv.glow.setTint(COLORS.glitch);
-    this.flashRing(sv, COLORS.glitch);
+    sv.core.setTint(color.glitch);
+    sv.glow.setTint(color.glitch);
+    this.flashRing(sv, color.glitch);
 
     const restore = (): void => {
       sv.container.setAngle(0);
-      sv.core.setTint(COLORS.starCore);
-      sv.glow.setTint(COLORS.starGlow);
+      sv.core.setTint(color.starCore);
+      sv.glow.setTint(color.starGlow);
     };
 
-    if (!prefs.animate) {
-      this.time.delayedCall(360, restore);
-      return;
-    }
-
-    this.tweens.add({
+    // The cold shows for as long as the ring does, whether or not it wobbles.
+    const wobble = motion(this, {
       targets: sv.container,
       angle: 9,
-      duration: 45,
+      duration: duration.tremor,
       yoyo: true,
       repeat: 3,
       onComplete: restore,
     });
+    if (!wobble) this.time.delayedCall(duration.slow, restore);
   }
 
   /* ---------------------------------------------------------------- *
@@ -654,16 +679,17 @@ export class Play extends Scene {
 
     this.tweens.killTweensOf(this.hintGfx);
     const state = { alpha: 0 };
-    this.tweens.add({
+    // Light, not movement: a Whisper answers a player who asked for stillness too.
+    tween(this, {
       targets: state,
       alpha: 0.9,
-      duration: 500,
+      duration: duration.slow,
       yoyo: true,
-      hold: 900,
-      ease: 'Sine.inOut',
+      hold: duration.reveal,
+      ease: ease.inOut,
       onUpdate: () => {
         this.hintGfx.clear();
-        this.hintGfx.lineStyle(3, COLORS.accent, state.alpha);
+        this.hintGfx.lineStyle(3, color.accent, state.alpha);
         this.hintGfx.lineBetween(a.container.x, a.container.y, b.container.x, b.container.y);
       },
       onComplete: () => this.hintGfx.clear(),
@@ -680,55 +706,73 @@ export class Play extends Scene {
     this.clearSelection();
     this.rubberGfx.clear();
     this.hintGfx.clear();
-    this.whisperPill.setVisible(false);
+
+    // The Whisper button has nothing left to offer, so it withdraws rather than
+    // blinking out from under the thumb that may still be near it.
+    tween(this, {
+      targets: this.whisperPill.container,
+      alpha: 0,
+      duration: duration.base,
+      ease: ease.in,
+      onComplete: () => this.whisperPill.setVisible(false),
+    });
 
     // Dim the sky to focus the reveal, but lift the constellation above it.
     this.overlay = this.add.graphics().setDepth(20);
-    this.overlay.fillStyle(0x03040c, 0);
+    this.overlay.fillStyle(color.void, 0);
     const overlayState = { a: 0 };
-    this.tweens.add({
+    tween(this, {
       targets: overlayState,
-      a: 0.5,
-      duration: 900,
+      a: alpha.veil,
+      duration: duration.reveal,
       onUpdate: () => {
         this.overlay!.clear();
-        this.overlay!.fillStyle(0x03040c, overlayState.a);
+        this.overlay!.fillStyle(color.void, overlayState.a);
         this.overlay!.fillRect(0, 0, this.view.w, this.view.h);
       },
     });
 
     this.connectionGfx.setDepth(30);
     for (const sv of this.starViews) {
+      // Each halo has been twinkling on an endless tween since `createStars`.
+      // Left running it would take `alpha` straight back off the reveal below.
+      this.tweens.killTweensOf(sv.glow);
+
       if (sv.data.isDecoy) {
-        this.tweens.add({ targets: sv.container, alpha: 0.1, duration: 700, ease: 'Sine.out' });
+        tween(this, { targets: sv.container, alpha: 0.1, duration: duration.reveal });
       } else {
         sv.container.setDepth(30);
+        // The swelled halo is where a real star comes to rest, so stillness
+        // takes it directly rather than being denied it with the swell.
         if (!prefs.animate) sv.glow.setScale(texScale(0.72));
-        this.tweens.add({
+        tween(this, {
           targets: sv.glow,
-          ...(prefs.animate ? { scale: texScale(0.72) } : {}),
+          scale: texScale(0.72),
           alpha: 0.75,
-          duration: 900,
-          ease: 'Sine.out',
+          duration: duration.reveal,
         });
       }
     }
 
-    // Breathing glow on the finished line-work.
-    this.tweens.add({
+    // Breathing glow on the finished line-work — or, held still, its full brightness.
+    const breathe = motion(this, {
       targets: this,
       glowPulse: 1,
-      duration: 1600,
+      duration: duration.breath,
       yoyo: true,
       repeat: -1,
-      ease: 'Sine.inOut',
+      ease: ease.inOut,
       onUpdate: () => this.redrawConnections(),
     });
+    if (!breathe) {
+      this.glowPulse = 1;
+      this.redrawConnections();
+    }
 
     ambience.reveal();
     this.celebrate();
     this.submitResult();
-    this.time.delayedCall(750, () => this.showStoryCard(false));
+    this.time.delayedCall(duration.reveal, () => this.showStoryCard());
   }
 
   /**
@@ -763,7 +807,7 @@ export class Play extends Scene {
       whispers: this.whispersUsed(),
       glitches: this.glitchHits,
     };
-    this.scene.start('Results', data);
+    leaveTo(this, 'Results', data);
   }
 
   /** Sparks rising off the finished shape. Pure movement, so stillness skips it. */
@@ -778,20 +822,20 @@ export class Play extends Scene {
         .image(src.container.x + (rng() - 0.5) * 22, src.container.y + (rng() - 0.5) * 22, TEX.spark)
         .setScale(texScale(0.1 + rng() * 0.16))
         .setAlpha(0)
-        .setTint(COLORS.lineCore)
+        .setTint(color.accentBright)
         .setDepth(34);
-      this.tweens.add({
+      motion(this, {
         targets: sp,
         y: sp.y - (30 + rng() * 70),
         alpha: { from: 0, to: 0.9 },
-        duration: 700 + rng() * 500,
-        ease: 'Sine.out',
+        duration: duration.reveal * (0.8 + rng() * 0.5),
         onComplete: () =>
-          this.tweens.add({
+          motion(this, {
             targets: sp,
             alpha: 0,
             y: sp.y - 30,
-            duration: 700,
+            duration: duration.reveal,
+            ease: ease.in,
             onComplete: () => sp.destroy(),
           }),
       });
@@ -799,86 +843,18 @@ export class Play extends Scene {
   }
 
   /**
-   * The bedtime story, sized to the viewport it lands in. The story font steps
-   * down until the whole card clears the top and bottom margins, so the reward
-   * is never cropped on a short screen. Nothing but the myth is on this card —
-   * the numbers wait for the Results screen.
-   *
-   * `rebuild` skips the entrance tween — a resize should not replay the reveal.
+   * The reward. Nothing but the myth is on this card — the numbers wait for the
+   * Results screen. My Sky shows the same card when a gathered constellation is
+   * tapped, so it lives in `ui/StoryCard`.
    */
-  private showStoryCard(rebuild: boolean): void {
-    const { w, h } = this.view;
-    this.storyCard?.destroy();
-
-    const margin = clamp(12, h * 0.04, 40);
-    const sidePad = clamp(12, w * 0.045, 28);
-    const maxH = h - margin * 2;
-    const cardW = Math.min(w - sidePad * 2, 560);
-    const padX = 24;
-    const wrap = cardW - padX * 2;
-
-    const padTop = 30;
-    const gap = 16;
-    const btnGap = 24;
-    const padBottom = 26;
-
-    const name = crispText(this, 0, 0, this.puzzle.name, {
-      fontFamily: 'Georgia, serif',
-      fontSize: `${clamp(21, w * 0.075, 27)}px`,
-      color: COLORS.accentText,
-      align: 'center',
-      fontStyle: 'italic',
-      wordWrap: { width: wrap },
-    }).setOrigin(0.5);
-    name.setShadow(0, 0, '#ffcf8a', 14, true, true);
-
-    const story = crispText(this, 0, 0, this.puzzle.story, {
-      fontFamily: 'Georgia, serif',
-      fontSize: '17px',
-      color: COLORS.text,
-      align: 'center',
-      lineSpacing: 7,
-      wordWrap: { width: wrap },
-    }).setOrigin(0.5);
-
-    const button = new Pill(this, 'Continue  ›', { minWidth: 200 }, () => this.openResults());
-
-    const cardHeight = (): number => padTop + name.height + gap + story.height + btnGap + PILL_H + padBottom;
-
-    let storySize = w < NARROW_W ? 15 : 17;
-    story.setFontSize(storySize);
-    while (cardHeight() > maxH && storySize > 11) {
-      story.setFontSize(--storySize);
-    }
-
-    const cardH = cardHeight();
-    const top = -cardH / 2;
-
-    name.setY(top + padTop + name.height / 2);
-    story.setY(name.y + name.height / 2 + gap + story.height / 2);
-    button.container.setY(story.y + story.height / 2 + btnGap + PILL_H / 2);
-
-    const bg = this.add.graphics();
-    bg.fillStyle(0x0e1430, 0.96);
-    bg.fillRoundedRect(-cardW / 2, top, cardW, cardH, 22);
-    bg.lineStyle(1.5, COLORS.lineGlow, 0.55);
-    bg.strokeRoundedRect(-cardW / 2, top, cardW, cardH, 22);
-
-    const card = this.add.container(w / 2, h / 2, [bg, name, story, button.container]).setDepth(40);
-    this.storyCard = card;
-
-    if (rebuild) return;
-
-    // The story always arrives softly; under stillness it arrives without rising.
-    card.setAlpha(0);
-    if (prefs.animate) card.setY(h / 2 + 26);
-    this.tweens.add({
-      targets: card,
-      alpha: 1,
-      ...(prefs.animate ? { y: h / 2 } : {}),
-      duration: 1500,
-      ease: 'Sine.out',
+  private showStoryCard(): void {
+    this.storyCard = new StoryCard(this, {
+      name: this.puzzle.name,
+      story: this.puzzle.story,
+      buttonLabel: 'Continue  ›',
+      onButton: () => this.openResults(),
     });
+    this.storyCard.show(this.view, true);
   }
 }
 

@@ -13,8 +13,10 @@
 import { Scene, GameObjects } from 'phaser';
 import { crispText } from './display';
 import { clamp, type Viewport } from './layout';
+import { duration, ease, tween } from './motion';
 import { Pill } from './Pill';
 import { prefs } from './prefs';
+import { alpha, color, control, font, ink, radius, space, typeScale } from './theme';
 
 /**
  * Emoji are drawn by the platform, and a glyph it does not have becomes a white
@@ -30,7 +32,6 @@ const HINTS = [
 const TITLE = 'Before you begin';
 const BUTTON = 'Open the sky';
 
-const BUTTON_H = 44;
 const DEPTH = 60;
 
 /** True the first time anyone plays on this device. */
@@ -61,9 +62,9 @@ export class Onboarding {
     this.layer?.destroy();
 
     const { w, h } = view;
-    const sidePad = clamp(12, w * 0.05, 32);
+    const sidePad = clamp(space.md, w * 0.05, space.xxl);
     const cardW = Math.min(w - sidePad * 2, 460);
-    const padX = 20;
+    const padX = space.xl - space.xs;
     const wrap = cardW - padX * 2 - 34;
 
     // Purely a veil. Nothing here is interactive: a full-screen hit area — on the
@@ -71,37 +72,37 @@ export class Onboarding {
     // sitting on top of it, and the card can then never be dismissed. The stars
     // underneath are held off by `Play`'s own guard while this card exists.
     const scrim = this.scene.add.graphics();
-    scrim.fillStyle(0x03040c, 0.72);
+    scrim.fillStyle(color.void, alpha.scrim);
     scrim.fillRect(-w / 2, -h / 2, w, h);
 
     const title = crispText(this.scene, 0, 0, TITLE, {
-      fontFamily: 'Georgia, serif',
-      fontSize: `${w < 380 ? 20 : 23}px`,
-      color: '#ffe3a3',
+      fontFamily: font.serif,
+      fontSize: `${w < 380 ? typeScale.title : typeScale.heading}px`,
+      color: ink.accent,
       fontStyle: 'italic',
     }).setOrigin(0.5, 0);
 
     const rows = HINTS.map(({ icon, text }) => {
-      const bullet = crispText(this.scene, 0, 0, icon, { fontSize: '18px' }).setOrigin(0, 0);
+      const bullet = crispText(this.scene, 0, 0, icon, { fontSize: `${typeScale.lead}px` }).setOrigin(0, 0);
       const body = crispText(this.scene, 0, 0, text, {
-        fontFamily: 'Arial',
-        fontSize: `${w < 380 ? 13 : 14}px`,
-        color: '#dfe3ff',
-        lineSpacing: 4,
+        fontFamily: font.sans,
+        fontSize: `${w < 380 ? typeScale.caption : typeScale.body}px`,
+        color: ink.body,
+        lineSpacing: space.xs,
         wordWrap: { width: wrap },
       }).setOrigin(0, 0);
       return { bullet, body };
     });
 
-    const button = new Pill(this.scene, BUTTON, { height: BUTTON_H, minWidth: 200 }, () => this.close());
+    const button = new Pill(this.scene, BUTTON, { height: control.lg, minWidth: 200 }, () => this.close());
 
     /* Measure the flow, then place it around the card's centre. */
 
-    const padTop = 24;
-    const titleGap = 20;
-    const rowGap = 15;
-    const buttonGap = 24;
-    const padBottom = 22;
+    const padTop = space.xl;
+    const titleGap = space.xl - space.xs;
+    const rowGap = space.lg;
+    const buttonGap = space.xl;
+    const padBottom = space.xl - space.xs;
 
     const rowHeights = rows.map(({ bullet, body }) => Math.max(bullet.height, body.height));
     const cardH =
@@ -111,7 +112,7 @@ export class Onboarding {
       rowHeights.reduce((sum, height) => sum + height + rowGap, 0) -
       rowGap +
       buttonGap +
-      BUTTON_H +
+      control.lg +
       padBottom;
 
     const top = -cardH / 2;
@@ -128,13 +129,13 @@ export class Onboarding {
     });
     y += buttonGap - rowGap;
 
-    button.setPosition(0, y + BUTTON_H / 2);
+    button.setPosition(0, y + control.lg / 2);
 
     const bg = this.scene.add.graphics();
-    bg.fillStyle(0x0e1430, 0.97);
-    bg.fillRoundedRect(-cardW / 2, top, cardW, cardH, 22);
-    bg.lineStyle(1.5, 0xffd27f, 0.5);
-    bg.strokeRoundedRect(-cardW / 2, top, cardW, cardH, 22);
+    bg.fillStyle(color.card, alpha.card);
+    bg.fillRoundedRect(-cardW / 2, top, cardW, cardH, radius.modal);
+    bg.lineStyle(1.5, color.accentGlow, alpha.border);
+    bg.strokeRoundedRect(-cardW / 2, top, cardW, cardH, radius.modal);
 
     const contents: GameObjects.GameObject[] = [scrim, bg, title, button.container];
     for (const { bullet, body } of rows) contents.push(bullet, body);
@@ -142,9 +143,10 @@ export class Onboarding {
     const layer = this.scene.add.container(w / 2, h / 2, contents).setDepth(DEPTH);
     this.layer = layer;
 
-    if (first && prefs.animate) {
+    // A veil is light, not movement: it arrives softly under stillness too.
+    if (first) {
       layer.setAlpha(0);
-      this.scene.tweens.add({ targets: layer, alpha: 1, duration: 420, ease: 'Sine.out' });
+      tween(this.scene, { targets: layer, alpha: 1, duration: duration.slow });
     }
   }
 
@@ -164,11 +166,11 @@ export class Onboarding {
       return;
     }
 
-    this.scene.tweens.add({
+    tween(this.scene, {
       targets: layer,
       alpha: 0,
-      duration: 280,
-      ease: 'Sine.in',
+      duration: duration.base,
+      ease: ease.in,
       onComplete: () => {
         this.destroy();
         this.onClose();

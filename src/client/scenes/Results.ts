@@ -1,10 +1,10 @@
 /**
  * Results — the quiet room after the story.
  *
- * Three tabs, in the order they matter at bedtime: **Tonight** (your Jwala, the
- * countdown to the next sky, what the community lit together), **My Sky** (the
- * constellations you have gathered), and **Stargazers** (the soft leaderboards,
- * deliberately last and deliberately small).
+ * Two tabs, in the order they matter at bedtime: **Tonight** (your Jwala, the
+ * countdown to the next sky, what the community lit together) and **Stargazers**
+ * (the soft leaderboards, deliberately last and deliberately small). My Sky is
+ * no longer a tab but a place: the `MySky` scene, one tap below.
  *
  * The screen paints from what the Play scene already knew, then quietly
  * reconciles with the server. Nothing here ever waits on the network to appear.
@@ -15,7 +15,7 @@
  */
 
 import * as Phaser from 'phaser';
-import { Scene, GameObjects } from 'phaser';
+import { Scene, GameObjects, Tweens } from 'phaser';
 import { showLoginPrompt, showToast } from '@devvit/web/client';
 import type {
   CompleteResponse,
@@ -25,8 +25,7 @@ import type {
   MySkyResponse,
   NightResult,
 } from '../../shared/api';
-import type { Constellation, Difficulty } from '../../shared/constellations';
-import { getConstellationById } from '../../shared/constellationLoader';
+import type { Difficulty } from '../../shared/constellations';
 import { EMPTY_JWALA, type JwalaState } from '../../shared/jwala';
 import { millisUntilNextNight } from '../../shared/nightSeed';
 import { fetchInit, fetchLeaderboards, fetchMySky, postShare } from '../api';
@@ -34,30 +33,20 @@ import { NightSky } from '../ui/NightSky';
 import { untilNextSky } from '../ui/countdown';
 import { crispText } from '../ui/display';
 import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { crossFade, duration, enter, leaveTo } from '../ui/motion';
 import { mmss, plural, summariseNight } from '../ui/nightSummary';
 import { Pill } from '../ui/Pill';
+import { pressable, tapArea } from '../ui/pressable';
 import { ScrollPanel } from '../ui/ScrollPanel';
-
-const COLORS = {
-  text: '#f5f3ff',
-  muted: '#a7b0da',
-  faint: '#7883b0',
-  accent: '#ffe3a3',
-  flame: '#ffb86b',
-  line: 0x2b3268,
-  cell: 0x161c40,
-  cellTonight: 0x1f2650,
-  star: 0xfff6e0,
-  edge: 0xffd27f,
-  accentLine: 0xffe3a3,
-};
+import { color, control, font, glow, hex, ink, space, typeScale } from '../ui/theme';
+import type { MySkyData } from './MySky';
 
 const SHARE_LABEL = '🌙  Share tonight';
 const SIGN_IN_LABEL = 'Sign in to share';
+const MY_SKY_LABEL = '✨  Open My Sky';
 
 const TABS = [
   { id: 'tonight', label: 'Tonight' },
-  { id: 'sky', label: 'My Sky' },
   { id: 'stargazers', label: 'Stargazers' },
 ] as const;
 
@@ -66,15 +55,8 @@ type TabId = (typeof TABS)[number]['id'];
 /** Below this width the tab labels tighten. */
 const NARROW_W = 380;
 
-/** What a My Sky thumbnail wants to be. Columns are chosen to get close to it. */
-const CELL_TARGET_W = 165;
-const MIN_COLUMNS = 2;
-const MAX_COLUMNS = 5;
 /** Below this height the subtitle under the night number is the first thing to go. */
 const DENSE_H = 560;
-
-const TAB_H = 38;
-const SHARE_H = 44;
 
 export type ResultsData = {
   night: number;
@@ -91,6 +73,8 @@ export type ResultsData = {
   timeMs: number;
   whispers: number;
   glitches: number;
+  /** Carried back from My Sky, so a card already posted still reads as posted. */
+  alreadyShared?: boolean;
 };
 
 export class Results extends Scene {
@@ -103,6 +87,10 @@ export class Results extends Scene {
   private view: Viewport = { w: 0, h: 0 };
 
   private tab: TabId = 'tonight';
+  /** The two tab pills, kept so a swap can light one and dim the other in place. */
+  private tabPills: Pill[] = [];
+  /** The width the panel is filled to, so it can be refilled without a re-layout. */
+  private contentW = 0;
 
   /** Server truth, once it answers. Until then the fallbacks below stand in. */
   private server: InitResponse | null = null;
@@ -129,6 +117,8 @@ export class Results extends Scene {
     this.params = data;
     this.ui = [];
     this.pills = [];
+    this.tabPills = [];
+    this.contentW = 0;
     this.tab = 'tonight';
     this.server = null;
     this.mySky = null;
@@ -137,7 +127,7 @@ export class Results extends Scene {
     this.countdown = null;
     this.sharePill = null;
     this.sharing = false;
-    this.shared = false;
+    this.shared = data.alreadyShared ?? false;
     this.nextNightAt = Date.now() + millisUntilNextNight();
   }
 
@@ -148,12 +138,12 @@ export class Results extends Scene {
     onLayout(this, (view) => this.build(view));
 
     this.time.addEvent({ delay: 250, loop: true, callback: () => this.tickCountdown() });
-    this.input.keyboard?.on('keydown-ESC', () => this.scene.start('MainMenu'));
+    this.input.keyboard?.on('keydown-ESC', () => leaveTo(this, 'MainMenu'));
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.panel.destroy());
 
     void this.sync();
-    this.cameras.main.fadeIn(400, 5, 6, 15);
-    this.panel.fadeIn(400, 5, 6, 15);
+    // Sweeps the panel's own camera along with the main one.
+    enter(this);
   }
 
   /* ---------------------------------------------------------------- *
@@ -187,7 +177,8 @@ export class Results extends Scene {
     const boards = await fetchLeaderboards();
     if (!this.scene.isActive()) return;
     this.boards = boards;
-    if (this.tab === 'stargazers') this.relayout();
+    // Only the panel's contents changed, so only the panel need reappear.
+    if (this.tab === 'stargazers') this.refreshPanel();
   }
 
   /**
@@ -275,32 +266,33 @@ export class Results extends Scene {
     this.pills.forEach((p) => p.destroy());
     this.ui = [];
     this.pills = [];
+    this.tabPills = [];
     this.countdown = null;
     this.sharePill = null;
 
-    const sidePad = clamp(14, w * 0.05, 32);
+    const sidePad = clamp(space.md, w * 0.05, space.xxl);
     const narrow = w < NARROW_W;
     const dense = h < DENSE_H;
     const contentW = w - sidePad * 2;
 
     /* ---- header, flowing down ---- */
 
-    let top = clamp(10, h * 0.035, 30);
+    let top = clamp(space.sm, h * 0.035, space.xxl - space.xs);
 
     const title = crispText(this, w / 2, top, `TaaraNight #${this.params.night}`, {
-      fontFamily: 'Georgia, "Times New Roman", serif',
-      fontSize: `${clamp(22, Math.min(w * 0.085, h * 0.05), 32)}px`,
-      color: COLORS.text,
+      fontFamily: font.serif,
+      fontSize: `${clamp(typeScale.heading, Math.min(w * 0.085, h * 0.05), typeScale.display)}px`,
+      color: ink.bright,
     }).setOrigin(0.5, 0);
-    title.setShadow(0, 0, '#8aa0ff', 14, true, true);
+    title.setShadow(0, 0, hex(color.starlight), glow.soft, true, true);
     this.ui.push(title);
     top += title.height;
 
     if (!dense) {
-      const subtitle = crispText(this, w / 2, top + 4, 'Tonight’s sky revealed', {
-        fontFamily: 'Georgia, serif',
-        fontSize: '15px',
-        color: COLORS.muted,
+      const subtitle = crispText(this, w / 2, top + space.xs, 'Tonight’s sky revealed', {
+        fontFamily: font.serif,
+        fontSize: `${typeScale.body}px`,
+        color: ink.muted,
         fontStyle: 'italic',
       }).setOrigin(0.5, 0);
       this.ui.push(subtitle);
@@ -309,36 +301,62 @@ export class Results extends Scene {
 
     /* ---- tabs ---- */
 
-    top += clamp(10, h * 0.022, 18);
-    const tabGap = 8;
+    top += clamp(space.sm, h * 0.022, space.lg);
+    const tabGap = space.sm;
     const tabW = (contentW - tabGap * (TABS.length - 1)) / TABS.length;
 
     TABS.forEach((tab, i) => {
       const pill = new Pill(
         this,
         tab.label,
-        { height: TAB_H, minWidth: tabW, fontSize: narrow ? 13 : 14, paddingX: 8 },
+        {
+          height: control.md,
+          minWidth: tabW,
+          fontSize: narrow ? typeScale.caption : typeScale.body,
+          paddingX: space.sm,
+        },
         () => this.selectTab(tab.id)
       );
       pill.setActive(tab.id === this.tab);
-      pill.setPosition(sidePad + tabW / 2 + i * (tabW + tabGap), top + TAB_H / 2);
+      pill.setPosition(sidePad + tabW / 2 + i * (tabW + tabGap), top + control.md / 2);
       this.pills.push(pill);
+      this.tabPills.push(pill);
     });
-    top += TAB_H;
+    top += control.md;
 
     /* ---- share row, flowing up ---- */
 
-    let bottom = h - clamp(10, h * 0.03, 24);
+    let bottom = h - clamp(space.sm, h * 0.03, space.xl);
 
     const back = crispText(this, w / 2, bottom, 'Return to the sky', {
-      fontFamily: 'Arial',
-      fontSize: '13px',
-      color: COLORS.faint,
+      fontFamily: font.sans,
+      fontSize: `${typeScale.caption}px`,
+      color: ink.faint,
     }).setOrigin(0.5, 1);
-    back.setInteractive({ useHandCursor: true });
-    back.on('pointerup', () => this.scene.start('MainMenu'));
+    // A quiet line of text, but a full-sized target: the hit area grows around
+    // the glyphs rather than the type growing to meet the thumb. Its colour
+    // warms and cools on the same curve every pill uses.
+    let shade: number = color.textFaint;
+    let warming: Tweens.Tween | null = null;
+    const shadeTo = (to: number): void => {
+      if (shade === to) return;
+      warming?.remove();
+      warming = crossFade(this, shade, to, (blended) => {
+        shade = blended;
+        back.setColor(hex(blended));
+      });
+    };
+    back.once(GameObjects.Events.DESTROY, () => warming?.remove());
+
+    pressable(this, back, tapArea(back.width, back.height), {
+      onClick: () => leaveTo(this, 'MainMenu'),
+      onHover: () => shadeTo(color.textMuted),
+      onPress: () => shadeTo(color.accent),
+      onRest: () => shadeTo(color.textFaint),
+    });
     this.ui.push(back);
-    bottom -= back.height + 12;
+    // Room for the grown hit area above the text, so it never eats the share pill's edge.
+    bottom -= back.height + space.lg;
 
     // A signed-out player cannot comment, so the button asks for the one thing
     // that would let them — rather than offering a share that will be refused.
@@ -346,28 +364,66 @@ export class Results extends Scene {
     const share = new Pill(
       this,
       anonymous ? SIGN_IN_LABEL : this.shared ? '✓ Shared' : SHARE_LABEL,
-      { height: SHARE_H, minWidth: Math.min(contentW, 280), fontSize: 15 },
+      { height: control.lg, minWidth: Math.min(contentW, 280), fontSize: typeScale.body },
       () => (anonymous ? showLoginPrompt() : void this.share())
     );
-    share.setPosition(w / 2, bottom - SHARE_H / 2);
+    share.setPosition(w / 2, bottom - control.lg / 2);
     share.setEnabled(anonymous || (this.viewer() === 'known' && !this.shared && !this.sharing));
     this.sharePill = share;
     this.pills.push(share);
-    bottom -= SHARE_H + 10;
+    bottom -= control.lg + space.sm;
+
+    const mySky = new Pill(
+      this,
+      MY_SKY_LABEL,
+      { height: control.md, minWidth: Math.min(contentW, 280), fontSize: typeScale.body },
+      () => this.openMySky()
+    );
+    mySky.setPosition(w / 2, bottom - control.md / 2);
+    this.pills.push(mySky);
+    bottom -= control.md + space.sm;
 
     /* ---- the panel takes what is left ---- */
 
-    const panelTop = top + clamp(8, h * 0.02, 16);
+    const panelTop = top + clamp(space.sm, h * 0.02, space.lg);
     const panelH = Math.max(80, bottom - panelTop);
+    this.contentW = contentW;
     this.panel.setBounds(sidePad, panelTop, contentW, panelH);
     this.fillPanel(contentW);
   }
 
+  /**
+   * A tab swap is not a new screen. The pills warm and cool where they stand,
+   * and only the panel's contents are exchanged — behind its own fade, so a
+   * screenful of numbers is never seen being replaced.
+   */
   private selectTab(tab: TabId): void {
     if (this.tab === tab) return;
     this.tab = tab;
     if (tab === 'stargazers') void this.loadBoards();
-    this.relayout();
+
+    TABS.forEach((candidate, i) => this.tabPills[i]?.setActive(candidate.id === tab));
+    this.refreshPanel();
+  }
+
+  /** Re-fill the panel in place and let its contents arrive rather than appear. */
+  private refreshPanel(): void {
+    if (this.contentW === 0) return;
+    this.fillPanel(this.contentW);
+    this.panel.fadeIn(duration.base);
+  }
+
+  /**
+   * My Sky is a whole night sky, so it gets a whole screen. It carries this
+   * screen's state with it and hands it back on the way out, so returning here
+   * does not undo a card the player already shared.
+   */
+  private openMySky(): void {
+    const data: MySkyData = {
+      tonight: { constellationId: this.params.constellationId, night: this.params.night },
+      results: { ...this.params, alreadyShared: this.shared },
+    };
+    leaveTo(this, 'MySky', data);
   }
 
   /* ---------------------------------------------------------------- *
@@ -377,10 +433,7 @@ export class Results extends Scene {
   private fillPanel(w: number): void {
     this.panel.clear();
 
-    let height: number;
-    if (this.tab === 'tonight') height = this.fillTonight(w);
-    else if (this.tab === 'sky') height = this.fillMySky(w);
-    else height = this.fillStargazers(w);
+    const height = this.tab === 'tonight' ? this.fillTonight(w) : this.fillStargazers(w);
 
     this.panel.setContentHeight(height);
   }
@@ -390,13 +443,13 @@ export class Results extends Scene {
     y: number,
     content: string,
     size: number,
-    color: string,
+    fill: string,
     options: { family?: string; italic?: boolean; wrap?: number } = {}
   ): GameObjects.Text {
     const text = crispText(this, this.panelWidth / 2, y, content, {
-      fontFamily: options.family ?? 'Arial',
+      fontFamily: options.family ?? font.sans,
       fontSize: `${size}px`,
-      color,
+      color: fill,
       align: 'center',
       ...(options.italic ? { fontStyle: 'italic' } : {}),
       ...(options.wrap ? { wordWrap: { width: options.wrap } } : {}),
@@ -407,7 +460,7 @@ export class Results extends Scene {
 
   private divider(y: number, w: number): void {
     const line = this.add.graphics();
-    line.lineStyle(1, COLORS.line, 0.9);
+    line.lineStyle(1, color.line, 0.9);
     line.lineBetween(w * 0.15, y, w * 0.85, y);
     this.panel.add(line);
   }
@@ -419,205 +472,92 @@ export class Results extends Scene {
     const jwala = this.jwala();
     const community = this.server?.community;
 
-    let y = 6;
+    const wrap = w - space.xl - space.xs;
+    let y = space.xs;
 
     // The flame first — it is the thing to be proud of.
-    const flame = crispText(this, w / 2, y, '🔥', { fontSize: '32px' }).setOrigin(0.5, 0);
+    const flame = crispText(this, w / 2, y, '🔥', { fontSize: `${typeScale.display}px` }).setOrigin(0.5, 0);
     this.panel.add(flame);
-    y += flame.height + 2;
+    y += flame.height + space.xs;
 
     const viewer = this.viewer();
 
     if (viewer === 'loading') {
-      y += this.panelText(y, 'Counting your nights…', 14, COLORS.faint).height;
+      y += this.panelText(y, 'Counting your nights…', typeScale.body, ink.faint).height;
     } else if (viewer === 'anonymous') {
       // The invitation to act is the share pill below, outside the panel — a
       // ScrollPanel's content is deliberately deaf to taps (see ScrollPanel).
-      y += this.panelText(y, 'Sign in to keep your Jwala burning', 14, COLORS.muted, { wrap: w - 20 }).height;
+      y += this.panelText(y, 'Sign in to keep your Jwala burning', typeScale.body, ink.muted, { wrap }).height;
     } else {
       const count = crispText(this, w / 2, y, String(jwala.current), {
-        fontFamily: 'Georgia, serif',
-        fontSize: '40px',
-        color: COLORS.flame,
+        fontFamily: font.serif,
+        fontSize: `${typeScale.hero}px`,
+        color: ink.accentDeep,
       }).setOrigin(0.5, 0);
-      count.setShadow(0, 0, '#ff9d4d', 18, true, true);
+      count.setShadow(0, 0, hex(color.accentGlow), glow.strong, true, true);
       this.panel.add(count);
       y += count.height;
 
       const caption = jwala.current === 1 ? 'night of Jwala' : 'nights of Jwala in a row';
-      y += this.panelText(y, caption, 14, COLORS.muted).height;
+      y += this.panelText(y, caption, typeScale.body, ink.muted).height;
 
       if (jwala.longest > jwala.current) {
-        y += 2 + this.panelText(y, `Longest: ${plural(jwala.longest, 'night')}`, 12, COLORS.faint).height;
+        const longest = `Longest: ${plural(jwala.longest, 'night')}`;
+        y += space.xs + this.panelText(y, longest, typeScale.caption, ink.faint).height;
       }
       // Signed in, but the night never reached Redis. Say so — the share card is
       // built from that record, so the player would otherwise learn it the hard way.
       if (!this.server?.tonight) {
-        y += 6 + this.panelText(y, 'Tonight is not written down yet', 12, COLORS.faint, { wrap: w - 20 }).height;
+        const unwritten = 'Tonight is not written down yet';
+        y += space.xs + this.panelText(y, unwritten, typeScale.caption, ink.faint, { wrap }).height;
       }
     }
 
-    y += 14;
-    this.countdown = this.panelText(y, untilNextSky(this.nextNightAt - Date.now()), 15, COLORS.accent);
-    y += this.countdown.height + 16;
+    y += space.md;
+    const remaining = untilNextSky(this.nextNightAt - Date.now());
+    this.countdown = this.panelText(y, remaining, typeScale.body, ink.accent);
+    y += this.countdown.height + space.lg;
 
     this.divider(y, w);
-    y += 16;
+    y += space.lg;
 
     if (community) {
       const stars =
         community.starsTonight > 0
           ? `${community.starsTonight.toLocaleString()} stars lit tonight`
           : 'You lit the first stars tonight';
-      y += this.panelText(y, stars, 16, COLORS.text, { family: 'Georgia, serif', wrap: w - 20 }).height;
-      y += 4 + this.panelText(y, `by ${plural(community.playersTonight, 'stargazer')}`, 13, COLORS.faint).height;
+      y += this.panelText(y, stars, typeScale.lead, ink.bright, { family: font.serif, wrap }).height;
+
+      const by = `by ${plural(community.playersTonight, 'stargazer')}`;
+      y += space.xs + this.panelText(y, by, typeScale.caption, ink.faint).height;
     } else {
-      y += this.panelText(y, 'Counting tonight’s stars…', 14, COLORS.faint).height;
+      y += this.panelText(y, 'Counting tonight’s stars…', typeScale.body, ink.faint).height;
     }
 
-    y += 16;
+    if (this.mySky && this.mySky.entries.length > 0) {
+      const gathered = `${this.mySky.entries.length} of ${this.mySky.total} skies gathered`;
+      y += space.xs + this.panelText(y, gathered, typeScale.caption, ink.muted).height;
+    }
+
+    y += space.lg;
     const summary = summariseNight(this.played(), this.server?.tonight ?? null);
-    y += this.panelText(y, summary.headline, 13, COLORS.muted, { wrap: w - 20 }).height;
+    y += this.panelText(y, summary.headline, typeScale.caption, ink.muted, { wrap }).height;
     if (summary.note) {
-      y += 4 + this.panelText(y, summary.note, 12, COLORS.faint, { wrap: w - 20 }).height;
+      y += space.xs + this.panelText(y, summary.note, typeScale.caption, ink.faint, { wrap }).height;
     }
 
-    return y + 8;
-  }
-
-  /* ---- My Sky ---- */
-
-  private fillMySky(w: number): number {
-    this.panelWidth = w;
-    let y = 4;
-
-    if (!this.mySky) {
-      this.panelText(y, 'Opening your sky…', 14, COLORS.faint);
-      return y + 30;
-    }
-
-    const entries = this.mySky.entries;
-
-    if (entries.length === 0) {
-      y += this.panelText(y, 'Your sky is still dark', 17, COLORS.text, { family: 'Georgia, serif' }).height;
-      const hint =
-        this.viewer() === 'known'
-          ? 'Every constellation you reveal is kept here, night after night.'
-          : 'Sign in, and every constellation you reveal is kept here.';
-      y += 8 + this.panelText(y, hint, 13, COLORS.faint, { wrap: Math.min(w - 30, 300) }).height;
-      return y + 8;
-    }
-
-    y += this.panelText(y, `${entries.length} of ${this.mySky.total} skies gathered`, 14, COLORS.muted).height;
-    y += 14;
-
-    // Enough columns to keep a thumbnail near its target size — two on a phone,
-    // five on a desktop — rather than three enormous cells on a wide screen.
-    const columns = clamp(MIN_COLUMNS, Math.floor(w / CELL_TARGET_W), MAX_COLUMNS);
-    const gap = 10;
-    const cellW = (w - gap * (columns - 1)) / columns;
-    const cellH = cellW * 0.95;
-
-    let drawn = 0;
-    for (const entry of entries) {
-      const constellation = getConstellationById(entry.constellationId);
-      if (!constellation) continue;
-
-      const col = drawn % columns;
-      const row = Math.floor(drawn / columns);
-      const tonight = entry.constellationId === this.params.constellationId;
-      const cell = this.skyCell(
-        col * (cellW + gap),
-        y + row * (cellH + gap),
-        cellW,
-        cellH,
-        constellation,
-        entry.night,
-        tonight
-      );
-      this.panel.add(cell);
-      drawn++;
-    }
-
-    const rows = Math.ceil(drawn / columns);
-    return y + rows * (cellH + gap) + 4;
-  }
-
-  /** One gathered constellation: its shape, its name, the night it was revealed. */
-  private skyCell(
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    constellation: Constellation,
-    night: number,
-    tonight: boolean
-  ): GameObjects.Container {
-    const bg = this.add.graphics();
-    bg.fillStyle(tonight ? COLORS.cellTonight : COLORS.cell, 0.88);
-    bg.fillRoundedRect(0, 0, w, h, 12);
-    bg.lineStyle(tonight ? 1.5 : 1, tonight ? COLORS.accentLine : COLORS.line, tonight ? 0.7 : 0.9);
-    bg.strokeRoundedRect(0, 0, w, h, 12);
-
-    const art = this.thumbnail(constellation, w, h - 32);
-
-    const name = crispText(this, w / 2, h - 15, constellation.name, {
-      fontFamily: 'Georgia, serif',
-      fontSize: '11px',
-      color: COLORS.accent,
-      align: 'center',
-    }).setOrigin(0.5, 1);
-
-    const label = crispText(this, w / 2, h - 4, tonight ? `#${night} · tonight` : `#${night}`, {
-      fontFamily: 'Arial',
-      fontSize: '9px',
-      color: COLORS.faint,
-    }).setOrigin(0.5, 1);
-
-    return this.add.container(x, y, [bg, art, name, label]);
-  }
-
-  /**
-   * A miniature of the constellation, scaled to fit the cell without distorting
-   * its shape — the point of My Sky is recognising the thing you drew.
-   */
-  private thumbnail(constellation: Constellation, w: number, h: number): GameObjects.Graphics {
-    const gfx = this.add.graphics();
-    const pad = 12;
-    const box = Math.max(10, Math.min(w - pad * 2, h - pad * 2));
-    const ox = (w - box) / 2;
-    const oy = (h - box) / 2;
-
-    const at = (index: number): { x: number; y: number } => {
-      const star = constellation.stars[index]!;
-      return { x: ox + star.x * box, y: oy + star.y * box };
-    };
-
-    gfx.lineStyle(1.5, COLORS.edge, 0.75);
-    for (const edge of constellation.connections) {
-      const a = at(edge.from);
-      const b = at(edge.to);
-      gfx.lineBetween(a.x, a.y, b.x, b.y);
-    }
-
-    gfx.fillStyle(COLORS.star, 1);
-    for (let i = 0; i < constellation.stars.length; i++) {
-      const point = at(i);
-      gfx.fillCircle(point.x, point.y, 2);
-    }
-
-    return gfx;
+    return y + space.sm;
   }
 
   /* ---- Stargazers ---- */
 
   private fillStargazers(w: number): number {
     this.panelWidth = w;
-    let y = 4;
+    let y = space.xs;
 
     if (!this.boards) {
-      this.panelText(y, 'Looking for tonight’s stargazers…', 14, COLORS.faint);
-      return y + 30;
+      this.panelText(y, 'Looking for tonight’s stargazers…', typeScale.body, ink.faint);
+      return y + space.xxl;
     }
 
     y = this.board(y, w, 'Fastest tonight', this.boards.fastest, mmss, 'No one has raced tonight');
@@ -649,41 +589,42 @@ export class Results extends Scene {
     format: (value: number) => string,
     empty: string
   ): number {
-    let cursor = y + this.panelText(y, title, 14, COLORS.accent, { family: 'Georgia, serif' }).height + 8;
+    const heading = this.panelText(y, title, typeScale.body, ink.accent, { family: font.serif });
+    let cursor = y + heading.height + space.sm;
 
     if (rows.length === 0) {
-      cursor += this.panelText(cursor, empty, 12, COLORS.faint, { italic: true }).height;
-      return cursor + 18;
+      cursor += this.panelText(cursor, empty, typeScale.caption, ink.faint, { italic: true }).height;
+      return cursor + space.lg;
     }
 
     const me = this.server?.username;
     for (const row of rows) {
       const mine = row.username === me;
-      const color = mine ? COLORS.accent : COLORS.muted;
+      const fill = mine ? ink.accent : ink.muted;
 
-      const rank = crispText(this, 4, cursor, String(row.rank), {
-        fontFamily: 'Arial',
-        fontSize: '12px',
-        color: COLORS.faint,
+      const rank = crispText(this, space.xs, cursor, String(row.rank), {
+        fontFamily: font.sans,
+        fontSize: `${typeScale.micro}px`,
+        color: ink.faint,
       }).setOrigin(0, 0);
 
-      const name = crispText(this, 28, cursor, mine ? `${row.username} (you)` : row.username, {
-        fontFamily: 'Arial',
-        fontSize: '13px',
-        color,
+      const name = crispText(this, space.xl + space.xs, cursor, mine ? `${row.username} (you)` : row.username, {
+        fontFamily: font.sans,
+        fontSize: `${typeScale.caption}px`,
+        color: fill,
       }).setOrigin(0, 0);
 
       // Kept clear of the right edge so a value never sits under the scrollbar.
-      const value = crispText(this, w - 12, cursor, format(row.value), {
-        fontFamily: 'Arial',
-        fontSize: '13px',
-        color,
+      const value = crispText(this, w - space.md, cursor, format(row.value), {
+        fontFamily: font.sans,
+        fontSize: `${typeScale.caption}px`,
+        color: fill,
       }).setOrigin(1, 0);
 
       this.panel.add(rank, name, value);
-      cursor += name.height + 7;
+      cursor += name.height + space.sm;
     }
 
-    return cursor + 18;
+    return cursor + space.lg;
   }
 }

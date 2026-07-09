@@ -13,11 +13,11 @@ import { Scene, GameObjects } from 'phaser';
 import { mulberry32 } from '../../shared/rng';
 import { texScale } from './display';
 import type { Viewport } from './layout';
+import { duration, ease, motion } from './motion';
 import { prefs } from './prefs';
+import { color } from './theme';
 import { TEX, ensureTextures } from './textures';
 
-const SKY_TOP = 0x05060f;
-const SKY_BOTTOM = 0x161a3e;
 const VIGNETTE_ALPHA = 0.38;
 
 interface BgStar {
@@ -47,8 +47,8 @@ export class NightSky {
       .image(0, 0, TEX.moon)
       .setAlpha(0.22)
       .setScale(texScale(2.6))
-      .setTint(0xaab4ff);
-    this.moon = scene.add.image(0, 0, TEX.moon).setScale(texScale(0.85)).setTint(0xf7f4ff);
+      .setTint(color.starlight);
+    this.moon = scene.add.image(0, 0, TEX.moon).setScale(texScale(0.85)).setTint(color.moon);
 
     const count = 90;
     for (let i = 0; i < count; i++) {
@@ -59,18 +59,18 @@ export class NightSky {
       this.stars.push({ nx: this.rng(), ny: this.rng(), img });
 
       // Keep drawing from the rng even when still, so a reduced-motion sky has
-      // its stars in the same places as everybody else's.
+      // its stars in the same places as everybody else's. `motion` declines to
+      // build the tween rather than the loop declining to reach the rng.
       const dim = baseAlpha * (0.3 + this.rng() * 0.3);
-      const duration = 1600 + this.rng() * 3200;
-      if (!prefs.animate) continue;
+      const period = duration.breath * (0.9 + this.rng());
 
-      scene.tweens.add({
+      motion(scene, {
         targets: img,
         alpha: dim,
-        duration,
+        duration: period,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.inOut',
+        ease: ease.inOut,
       });
     }
 
@@ -84,7 +84,7 @@ export class NightSky {
     const { w, h } = view;
 
     this.gfx.clear();
-    this.gfx.fillGradientStyle(SKY_TOP, SKY_TOP, SKY_BOTTOM, SKY_BOTTOM, 1);
+    this.gfx.fillGradientStyle(color.skyTop, color.skyTop, color.skyBottom, color.skyBottom, 1);
     this.gfx.fillRect(0, 0, w, h);
 
     const mx = w * 0.8;
@@ -99,7 +99,7 @@ export class NightSky {
     // canvas shows off beautifully.
     this.vignette.clear();
     const band = Math.max(w, h) * 0.18;
-    const dark = 0x03040c;
+    const dark = color.void;
 
     this.vignette.fillGradientStyle(dark, dark, dark, dark, VIGNETTE_ALPHA, VIGNETTE_ALPHA, 0, 0);
     this.vignette.fillRect(0, 0, w, band);
@@ -108,8 +108,8 @@ export class NightSky {
   }
 
   private scheduleShootingStar(): void {
-    const delay = 4200 + this.rng() * 7000;
-    this.scene.time.delayedCall(delay, () => {
+    const wait = 4200 + this.rng() * 7000;
+    this.scene.time.delayedCall(wait, () => {
       this.shoot();
       this.scheduleShootingStar();
     });
@@ -126,14 +126,17 @@ export class NightSky {
       .setScale(texScale(0.9), texScale(0.14))
       .setAngle(28)
       .setAlpha(0);
-    this.scene.tweens.add({
+    // Pure travel, so `motion` skips it outright — though nothing schedules a
+    // shooting star under stillness in the first place.
+    const trail = motion(this.scene, {
       targets: streak,
       x: startX + w * 0.28,
       y: startY + h * 0.22,
       alpha: { from: 0.85, to: 0 },
-      duration: 750,
-      ease: 'Sine.in',
+      duration: duration.reveal,
+      ease: ease.in,
       onComplete: () => streak.destroy(),
     });
+    if (!trail) streak.destroy();
   }
 }
