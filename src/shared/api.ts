@@ -1,18 +1,131 @@
+/**
+ * The client ↔ server contract for TaaraNight.
+ *
+ * Spoiler rule: nothing here carries a constellation name, shape, or story.
+ * The client already derives those from the shared dataset once the player has
+ * solved the puzzle; the server only ever speaks in ids, counts and nights.
+ */
+
+import type { Difficulty } from './constellations';
+import type { JwalaState } from './jwala';
+
+/** What a player did on one night. Written once, on their first completion. */
+export type NightResult = {
+  night: number;
+  difficulty: Difficulty;
+  /** How long the solve took, in milliseconds. */
+  timeMs: number;
+  /** Whispers (hints) spent. */
+  whispers: number;
+  /** Glitch decoys the player touched by mistake. */
+  glitches: number;
+  /** Real stars in this night's constellation — what they lit up. */
+  starsConnected: number;
+  /** Unix ms when the completion was recorded. */
+  completedAt: number;
+};
+
+/** Tonight's shared, community-wide numbers. */
+export type CommunityStats = {
+  /** Stars connected by everyone tonight. */
+  starsTonight: number;
+  /** Distinct players who finished tonight. */
+  playersTonight: number;
+};
+
 export type InitResponse = {
-  type: "init";
-  postId: string;
-  count: number;
+  type: 'init';
+  postId: string | null;
+  /** Reddit username, or null when logged out (results are not recorded). */
+  username: string | null;
+  night: number;
+  /** "TaaraNight #12" */
+  label: string;
+  /** Milliseconds until the next sky unlocks (the next 01:00 UTC boundary). */
+  msUntilNextNight: number;
+  /** This player's result for tonight, if they have already finished it. */
+  tonight: NightResult | null;
+  jwala: JwalaState;
+  community: CommunityStats;
+};
+
+export type CompleteRequest = {
+  difficulty: Difficulty;
+  timeMs: number;
+  whispers: number;
+  glitches: number;
+  /**
+   * Dev-only night override, used to test streaks without waiting a day.
+   * Ignored everywhere except the dev subreddit.
+   */
+  night?: number;
+};
+
+export type CompleteResponse = {
+  type: 'complete';
+  /** False when logged out — nothing was written. */
+  recorded: boolean;
+  /** True when this night was already completed; nothing was counted twice. */
+  alreadyPlayed: boolean;
+  /** The stored result — on a repeat play, the *original* one. */
+  result: NightResult;
+  jwala: JwalaState;
+  community: CommunityStats;
+  /** Milliseconds until the next sky unlocks, from the server's clock. */
+  msUntilNextNight: number;
+};
+
+/** One collected constellation in a player's My Sky. */
+export type SkyEntry = {
+  constellationId: string;
+  /** The most recent night on which they completed it. */
+  night: number;
+};
+
+export type MySkyResponse = {
+  type: 'mySky';
+  /** Newest night first. */
+  entries: SkyEntry[];
+  /** How many distinct constellations exist to collect. */
+  total: number;
+};
+
+export type LeaderboardEntry = {
   username: string;
+  /** Time in ms, Whispers spent, or Jwala length — depends on the board. */
+  value: number;
+  /** 1-based. */
+  rank: number;
 };
 
-export type IncrementResponse = {
-  type: "increment";
-  postId: string;
-  count: number;
+export type LeaderboardsResponse = {
+  type: 'leaderboards';
+  night: number;
+  /** Fastest solves tonight — Hard mode only. */
+  fastest: LeaderboardEntry[];
+  /** Fewest Whispers tonight — Medium and Hard only (Easy has no Whispers). */
+  fewestWhispers: LeaderboardEntry[];
+  /** Longest burning Jwala, all-time. */
+  longestJwala: LeaderboardEntry[];
 };
 
-export type DecrementResponse = {
-  type: "decrement";
-  postId: string;
-  count: number;
+/**
+ * The result of posting tonight's share card as a comment.
+ *
+ * The comment body is composed on the server from the *stored* result, so the
+ * client cannot post arbitrary text under the player's name — it only asks.
+ */
+export type ShareResponse = {
+  type: 'share';
+  /** True when this night's card was already posted; no second comment was made. */
+  alreadyShared: boolean;
+  /** The exact comment body, so the client can show what was posted. */
+  text: string;
+  /** Where the comment lives, when we know. */
+  permalink: string | null;
+};
+
+export type ErrorResponse = {
+  status: 'error';
+  message: string;
 };

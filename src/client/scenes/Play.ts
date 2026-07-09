@@ -17,7 +17,13 @@ import { generatePuzzle, type NightlyPuzzle, type PuzzleStar } from '../../share
 import { nightNumberAt } from '../../shared/nightSeed';
 import { mulberry32 } from '../../shared/rng';
 import { NightSky } from '../ui/NightSky';
+import { crispText, texScale } from '../ui/display';
+import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { Pill } from '../ui/Pill';
 import { TEX } from '../ui/textures';
+import { postComplete } from '../api';
+import type { CompleteResponse } from '../../shared/api';
+import type { ResultsData } from './Results';
 
 const COLORS = {
   starCore: 0xfff6e0,
@@ -34,6 +40,12 @@ const COLORS = {
 };
 
 const TAP_THRESHOLD = 12;
+/** Tall enough to be a comfortable thumb target on mobile. Matches `Pill`'s default. */
+const PILL_H = 40;
+/** Wide enough that a two-digit-minute timer never grows the pill mid-solve. */
+const TIMER_W = 78;
+/** Below this width the HUD stacks its title under the pill row. */
+const NARROW_W = 420;
 
 interface StarView {
   data: PuzzleStar;
@@ -80,13 +92,12 @@ export class Play extends Scene {
   // HUD.
   private titleText!: GameObjects.Text;
   private hintText!: GameObjects.Text;
-  private timerPill!: GameObjects.Container;
-  private timerText!: GameObjects.Text;
-  private backPill!: GameObjects.Container;
-  private whisperPill!: GameObjects.Container;
-  private whisperText!: GameObjects.Text;
+  private timerPill!: Pill;
+  private backPill!: Pill;
+  private whisperPill!: Pill;
   private storyCard: GameObjects.Container | null = null;
 
+  private view: Viewport = { w: 0, h: 0 };
   private area = { ox: 0, oy: 0, size: 0 };
 
   // Interaction.
@@ -102,6 +113,12 @@ export class Play extends Scene {
   private startTime = 0;
   private lastShownSecond = -1;
   private glowPulse = 0;
+  private glitchHits = 0;
+  /** How long the solve took, frozen at completion. */
+  private solveMs = 0;
+
+  /** The write of tonight's result, handed to Results so it need not race it. */
+  private submission: Promise<CompleteResponse | null> | null = null;
 
   constructor() {
     super('Play');
@@ -122,13 +139,18 @@ export class Play extends Scene {
     this.complete = false;
     this.lastShownSecond = -1;
     this.glowPulse = 0;
+    this.glitchHits = 0;
+    this.solveMs = 0;
+    this.submission = null;
   }
 
   create(): void {
     const night = Math.max(1, nightNumberAt(Date.now()));
     this.puzzle = generatePuzzle(night, this.difficulty);
     this.whispersLeft = this.puzzle.params.maxWhispers;
-    this.startTime = this.time.now;
+    // Not `this.time.now`: the scene Clock has not ticked when `create` runs, so
+    // it still reads 0 and the timer would count from page load, not from now.
+    this.startTime = performance.now();
 
     for (const edge of this.puzzle.solution) {
       this.solutionSet.add(connKey(edge.from, edge.to));
@@ -143,14 +165,9 @@ export class Play extends Scene {
 
     this.createStars();
     this.createHud();
-    this.layout();
 
-    this.scale.on('resize', this.layout, this);
+    onLayout(this, (view) => this.layout(view));
     this.registerInput();
-
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.scale.off('resize', this.layout, this);
-    });
 
     // Gentle entrance.
     this.cameras.main.fadeIn(500, 5, 6, 15);
@@ -158,10 +175,10 @@ export class Play extends Scene {
 
   override update(): void {
     if (this.complete || !this.puzzle.params.timed) return;
-    const seconds = Math.floor((this.time.now - this.startTime) / 1000);
+    const seconds = Math.floor((performance.now() - this.startTime) / 1000);
     if (seconds !== this.lastShownSecond) {
       this.lastShownSecond = seconds;
-      this.timerText.setText(mmss(seconds));
+      this.timerPill.setLabel(mmss(seconds));
     }
   }
 
@@ -171,8 +188,12 @@ export class Play extends Scene {
 
   private createStars(): void {
     this.puzzle.stars.forEach((data) => {
-      const glow = this.add.image(0, 0, TEX.starSoft).setScale(0.42).setTint(COLORS.starGlow).setAlpha(0.55);
-      const core = this.add.image(0, 0, TEX.starSoft).setScale(0.18).setTint(COLORS.starCore);
+      const glow = this.add
+        .image(0, 0, TEX.starSoft)
+        .setScale(texScale(0.42))
+        .setTint(COLORS.starGlow)
+        .setAlpha(0.55);
+      const core = this.add.image(0, 0, TEX.starSoft).setScale(texScale(0.18)).setTint(COLORS.starCore);
       const container = this.add.container(0, 0, [glow, core]);
       const view: StarView = { data, container, glow, core };
       this.starViews.push(view);
@@ -180,7 +201,7 @@ export class Play extends Scene {
 
       this.tweens.add({
         targets: glow,
-        scale: 0.5,
+        scale: texScale(0.5),
         alpha: 0.35,
         duration: 1700 + (data.id % 6) * 240,
         yoyo: true,
@@ -191,32 +212,24 @@ export class Play extends Scene {
   }
 
   private createHud(): void {
-    this.titleText = this.add
-      .text(0, 0, this.puzzle.label, {
-        fontFamily: 'Georgia, serif',
-        fontSize: '20px',
-        color: COLORS.text,
-      })
-      .setOrigin(0.5);
+    this.titleText = crispText(this, 0, 0, this.puzzle.label, {
+      fontFamily: 'Georgia, serif',
+      fontSize: '20px',
+      color: COLORS.text,
+    }).setOrigin(0.5);
 
-    this.hintText = this.add
-      .text(0, 0, this.buildHintLabel(), {
-        fontFamily: 'Arial',
-        fontSize: '14px',
-        color: COLORS.textMuted,
-      })
-      .setOrigin(0.5);
+    this.hintText = crispText(this, 0, 0, this.buildHintLabel(), {
+      fontFamily: 'Arial',
+      fontSize: '14px',
+      color: COLORS.textMuted,
+    }).setOrigin(0.5);
 
-    this.backPill = this.makePill(72, '‹ Back', COLORS.accent, () => this.scene.start('MainMenu'));
+    this.backPill = new Pill(this, '‹ Back', { minWidth: 72 }, () => this.scene.start('MainMenu'));
 
-    const timer = this.makePillWithRef(70, this.puzzle.params.timed ? '0:00' : '', COLORS.accent);
-    this.timerPill = timer.container;
-    this.timerText = timer.text;
+    this.timerPill = new Pill(this, '0:00', { minWidth: TIMER_W });
     this.timerPill.setVisible(this.puzzle.params.timed);
 
-    const whisper = this.makePillWithRef(150, '', COLORS.accent, () => this.useWhisper());
-    this.whisperPill = whisper.container;
-    this.whisperText = whisper.text;
+    this.whisperPill = new Pill(this, '', { minWidth: 150 }, () => this.useWhisper());
     this.updateWhisperButton();
     this.whisperPill.setVisible(!this.puzzle.params.showOutline && this.puzzle.params.maxWhispers > 0);
   }
@@ -229,54 +242,50 @@ export class Play extends Scene {
     return 'Find the hidden constellation';
   }
 
-  /** A static tap pill (fixed to its text width). */
-  private makePill(minWidth: number, label: string, accent: number, onClick?: () => void): GameObjects.Container {
-    return this.makePillWithRef(minWidth, label, accent, onClick).container;
-  }
-
-  /** A pill whose label can change later (timer / whisper). */
-  private makePillWithRef(
-    minWidth: number,
-    label: string,
-    accent: number,
-    onClick?: () => void
-  ): { container: GameObjects.Container; text: GameObjects.Text } {
-    const text = this.add
-      .text(0, 0, label, { fontFamily: 'Arial', fontSize: '15px', color: '#eef0ff' })
-      .setOrigin(0.5);
-    const w = Math.max(minWidth, text.width + 30);
-    const h = 34;
-    const bg = this.add.graphics();
-    bg.fillStyle(0x1a2048, 0.9);
-    bg.fillRoundedRect(-w / 2, -h / 2, w, h, h / 2);
-    bg.lineStyle(1, accent, 0.4);
-    bg.strokeRoundedRect(-w / 2, -h / 2, w, h, h / 2);
-
-    const container = this.add.container(0, 0, [bg, text]);
-    container.setSize(w, h);
-    if (onClick) {
-      container.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -h / 2, w, h), Phaser.Geom.Rectangle.Contains);
-      container.on('pointerover', () => container.setScale(1.05));
-      container.on('pointerout', () => container.setScale(1));
-      container.on('pointerup', onClick);
-    }
-    return { container, text };
-  }
-
   /* ---------------------------------------------------------------- *
    *  Layout
    * ---------------------------------------------------------------- */
 
-  private layout(): void {
-    const { width, height } = this.scale;
-    this.cameras.resize(width, height);
-    this.sky.layout(width, height);
+  /**
+   * The HUD reserves what it actually needs at the top and bottom; the star
+   * field is the largest square that fits in between. The title sits inline
+   * between the Back and timer pills only when it genuinely fits there —
+   * otherwise it drops onto its own row rather than running under them.
+   */
+  private layout(view: Viewport): void {
+    this.view = view;
+    const { w, h } = view;
+    this.sky.layout(view);
 
-    const topBar = 84;
-    const bottomBar = 90;
-    const avail = height - topBar - bottomBar;
-    const size = Math.min(width * 0.94, avail);
-    const ox = (width - size) / 2;
+    const sidePad = clamp(12, w * 0.045, 28);
+    const topPad = clamp(10, h * 0.022, 18);
+    const rowY = topPad + PILL_H / 2;
+
+    this.backPill.setPosition(sidePad + this.backPill.width / 2, rowY);
+    this.timerPill.setPosition(w - sidePad - this.timerPill.width / 2, rowY);
+
+    this.titleText.setFontSize(w < NARROW_W ? 17 : 20);
+    this.hintText.setFontSize(w < NARROW_W ? 12 : 14);
+
+    const flank = Math.max(this.backPill.width, this.puzzle.params.timed ? this.timerPill.width : 0);
+    // The 32 is breathing room: a title that only *just* clears the pills reads
+    // as a collision even when it technically isn't.
+    const inline = this.titleText.width <= w - 2 * (sidePad + flank) - 32;
+
+    const titleY = inline ? rowY : topPad + PILL_H + 10 + this.titleText.height / 2;
+    this.titleText.setPosition(w / 2, titleY);
+    this.hintText.setPosition(w / 2, titleY + this.titleText.height / 2 + 4 + this.hintText.height / 2);
+
+    const topBar = this.hintText.y + this.hintText.height / 2 + clamp(8, h * 0.02, 18);
+
+    const bottomPad = clamp(10, h * 0.022, 18);
+    const whisperVisible = this.whisperPill.visible;
+    if (whisperVisible) this.whisperPill.setPosition(w / 2, h - bottomPad - PILL_H / 2);
+    const bottomBar = whisperVisible ? bottomPad + PILL_H + 12 : bottomPad + 8;
+
+    const avail = Math.max(120, h - topBar - bottomBar);
+    const size = Math.min(w - sidePad * 2, avail);
+    const ox = (w - size) / 2;
     const oy = topBar + (avail - size) / 2;
     this.area = { ox, oy, size };
 
@@ -287,18 +296,13 @@ export class Play extends Scene {
     this.redrawOutline();
     this.redrawConnections();
 
-    this.titleText.setPosition(width / 2, 30);
-    this.hintText.setPosition(width / 2, 56);
-    this.backPill.setPosition(52, 30);
-    this.timerPill.setPosition(width - 52, 30);
-    this.whisperPill.setPosition(width / 2, height - 46);
-
     if (this.overlay) {
       this.overlay.clear();
       this.overlay.fillStyle(0x03040c, 0.5);
-      this.overlay.fillRect(0, 0, width, height);
+      this.overlay.fillRect(0, 0, w, h);
     }
-    if (this.storyCard) this.storyCard.setPosition(width / 2, height / 2);
+    // The card wraps its story to the viewport, so a resize has to rebuild it.
+    if (this.storyCard) this.showStoryCard(true);
   }
 
   private hitRadius(): number {
@@ -370,17 +374,17 @@ export class Play extends Scene {
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.complete) return;
-    const s = this.starAt(pointer.x, pointer.y);
+    const s = this.starAt(pointer.worldX, pointer.worldY);
     this.downStar = s;
-    this.downX = pointer.x;
-    this.downY = pointer.y;
+    this.downX = pointer.worldX;
+    this.downY = pointer.worldY;
     this.dragging = !!s;
-    if (s) this.drawRubber(s, pointer.x, pointer.y);
+    if (s) this.drawRubber(s, pointer.worldX, pointer.worldY);
     else this.clearSelection();
   }
 
   private onPointerMove(pointer: Phaser.Input.Pointer): void {
-    if (this.dragging && this.downStar) this.drawRubber(this.downStar, pointer.x, pointer.y);
+    if (this.dragging && this.downStar) this.drawRubber(this.downStar, pointer.worldX, pointer.worldY);
   }
 
   private onPointerUp(pointer: Phaser.Input.Pointer): void {
@@ -390,7 +394,7 @@ export class Play extends Scene {
     this.dragging = false;
     if (this.complete) return;
 
-    const moved = Phaser.Math.Distance.Between(this.downX, this.downY, pointer.x, pointer.y);
+    const moved = Phaser.Math.Distance.Between(this.downX, this.downY, pointer.worldX, pointer.worldY);
 
     if (moved < TAP_THRESHOLD) {
       if (!down) {
@@ -409,7 +413,7 @@ export class Play extends Scene {
       return;
     }
 
-    const up = this.starAt(pointer.x, pointer.y);
+    const up = this.starAt(pointer.worldX, pointer.worldY);
     if (down && up && up !== down) {
       this.clearSelection();
       this.attemptConnect(down, up);
@@ -471,12 +475,12 @@ export class Play extends Scene {
   private flashRing(sv: StarView, color: number): void {
     const ring = this.add
       .image(sv.container.x, sv.container.y, TEX.starSoft)
-      .setScale(0.2)
+      .setScale(texScale(0.2))
       .setTint(color)
       .setAlpha(0.7);
     this.tweens.add({
       targets: ring,
-      scale: 0.9,
+      scale: texScale(0.9),
       alpha: 0,
       duration: 420,
       ease: 'Sine.out',
@@ -485,6 +489,7 @@ export class Play extends Scene {
   }
 
   private wrongFeedback(a: StarView, b: StarView): void {
+    if (a.data.isDecoy || b.data.isDecoy) this.glitchHits++;
     this.shakeStar(a);
     this.shakeStar(b);
     this.cameras.main.shake(120, 0.003);
@@ -530,8 +535,8 @@ export class Play extends Scene {
    * ---------------------------------------------------------------- */
 
   private updateWhisperButton(): void {
-    this.whisperText.setText(`✨ Whisper · ${this.whispersLeft}`);
-    this.whisperPill.setAlpha(this.whispersLeft > 0 ? 1 : 0.4);
+    this.whisperPill.setLabel(`✨ Whisper · ${this.whispersLeft}`);
+    this.whisperPill.setEnabled(this.whispersLeft > 0);
   }
 
   private useWhisper(): void {
@@ -578,6 +583,7 @@ export class Play extends Scene {
 
   private onComplete(): void {
     this.complete = true;
+    this.solveMs = Math.round(performance.now() - this.startTime);
     this.clearSelection();
     this.rubberGfx.clear();
     this.hintGfx.clear();
@@ -592,10 +598,9 @@ export class Play extends Scene {
       a: 0.5,
       duration: 900,
       onUpdate: () => {
-        const { width, height } = this.scale;
         this.overlay!.clear();
         this.overlay!.fillStyle(0x03040c, overlayState.a);
-        this.overlay!.fillRect(0, 0, width, height);
+        this.overlay!.fillRect(0, 0, this.view.w, this.view.h);
       },
     });
 
@@ -605,7 +610,13 @@ export class Play extends Scene {
         this.tweens.add({ targets: sv.container, alpha: 0.1, duration: 700, ease: 'Sine.out' });
       } else {
         sv.container.setDepth(30);
-        this.tweens.add({ targets: sv.glow, scale: 0.72, alpha: 0.75, duration: 900, ease: 'Sine.out' });
+        this.tweens.add({
+          targets: sv.glow,
+          scale: texScale(0.72),
+          alpha: 0.75,
+          duration: 900,
+          ease: 'Sine.out',
+        });
       }
     }
 
@@ -621,7 +632,43 @@ export class Play extends Scene {
     });
 
     this.celebrate();
-    this.time.delayedCall(750, () => this.showStoryCard());
+    this.submitResult();
+    this.time.delayedCall(750, () => this.showStoryCard(false));
+  }
+
+  /**
+   * Send the night to the server, once. The story reveal never waits on the
+   * network — a failure costs the player nothing but the record — so the
+   * promise is kept rather than awaited, and handed to Results, which does need
+   * the write to have landed before it asks what tonight looks like.
+   */
+  private submitResult(): void {
+    if (this.submission) return;
+
+    this.submission = postComplete({
+      difficulty: this.difficulty,
+      timeMs: this.solveMs,
+      whispers: this.whispersUsed(),
+      glitches: this.glitchHits,
+    });
+  }
+
+  private whispersUsed(): number {
+    return this.puzzle.params.maxWhispers - this.whispersLeft;
+  }
+
+  /** Leave the story behind and go count the night. */
+  private openResults(): void {
+    const data: ResultsData = {
+      night: this.puzzle.night,
+      difficulty: this.difficulty,
+      constellationId: this.puzzle.constellationId,
+      submission: this.submission ?? undefined,
+      timeMs: this.solveMs,
+      whispers: this.whispersUsed(),
+      glitches: this.glitchHits,
+    };
+    this.scene.start('Results', data);
   }
 
   private celebrate(): void {
@@ -632,7 +679,7 @@ export class Play extends Scene {
       const src = reals[Math.floor(rng() * reals.length)]!;
       const sp = this.add
         .image(src.container.x + (rng() - 0.5) * 22, src.container.y + (rng() - 0.5) * 22, TEX.spark)
-        .setScale(0.1 + rng() * 0.16)
+        .setScale(texScale(0.1 + rng() * 0.16))
         .setAlpha(0)
         .setTint(COLORS.lineCore)
         .setDepth(34);
@@ -654,46 +701,65 @@ export class Play extends Scene {
     }
   }
 
-  private showStoryCard(): void {
-    const { width, height } = this.scale;
-    const cardW = Math.min(width * 0.88, 560);
-    const wrap = cardW - 48;
+  /**
+   * The bedtime story, sized to the viewport it lands in. The story font steps
+   * down until the whole card clears the top and bottom margins, so the reward
+   * is never cropped on a short screen. Nothing but the myth is on this card —
+   * the numbers wait for the Results screen.
+   *
+   * `rebuild` skips the entrance tween — a resize should not replay the reveal.
+   */
+  private showStoryCard(rebuild: boolean): void {
+    const { w, h } = this.view;
+    this.storyCard?.destroy();
 
-    const name = this.add
-      .text(0, 0, this.puzzle.name, {
-        fontFamily: 'Georgia, serif',
-        fontSize: '27px',
-        color: COLORS.accentText,
-        align: 'center',
-        fontStyle: 'italic',
-      })
-      .setOrigin(0.5);
-    name.setShadow(0, 0, '#ffcf8a', 14, true, true);
-
-    const story = this.add
-      .text(0, 0, this.puzzle.story, {
-        fontFamily: 'Georgia, serif',
-        fontSize: '17px',
-        color: COLORS.text,
-        align: 'center',
-        lineSpacing: 7,
-        wordWrap: { width: wrap },
-      })
-      .setOrigin(0.5);
-
-    const button = this.makePill(200, 'Return to the sky', COLORS.accent, () => this.scene.start('MainMenu'));
+    const margin = clamp(12, h * 0.04, 40);
+    const sidePad = clamp(12, w * 0.045, 28);
+    const maxH = h - margin * 2;
+    const cardW = Math.min(w - sidePad * 2, 560);
+    const padX = 24;
+    const wrap = cardW - padX * 2;
 
     const padTop = 30;
     const gap = 16;
     const btnGap = 24;
     const padBottom = 26;
-    const contentH = name.height + gap + story.height + btnGap + 34;
-    const cardH = padTop + contentH + padBottom;
+
+    const name = crispText(this, 0, 0, this.puzzle.name, {
+      fontFamily: 'Georgia, serif',
+      fontSize: `${clamp(21, w * 0.075, 27)}px`,
+      color: COLORS.accentText,
+      align: 'center',
+      fontStyle: 'italic',
+      wordWrap: { width: wrap },
+    }).setOrigin(0.5);
+    name.setShadow(0, 0, '#ffcf8a', 14, true, true);
+
+    const story = crispText(this, 0, 0, this.puzzle.story, {
+      fontFamily: 'Georgia, serif',
+      fontSize: '17px',
+      color: COLORS.text,
+      align: 'center',
+      lineSpacing: 7,
+      wordWrap: { width: wrap },
+    }).setOrigin(0.5);
+
+    const button = new Pill(this, 'Continue  ›', { minWidth: 200 }, () => this.openResults());
+
+    const cardHeight = (): number => padTop + name.height + gap + story.height + btnGap + PILL_H + padBottom;
+
+    let storySize = w < NARROW_W ? 15 : 17;
+    story.setFontSize(storySize);
+    while (cardHeight() > maxH && storySize > 11) {
+      story.setFontSize(--storySize);
+    }
+
+    const cardH = cardHeight();
     const top = -cardH / 2;
 
     name.setY(top + padTop + name.height / 2);
     story.setY(name.y + name.height / 2 + gap + story.height / 2);
-    button.setY(story.y + story.height / 2 + btnGap + 17);
+    button.container.setY(story.y + story.height / 2 + btnGap + PILL_H / 2);
 
     const bg = this.add.graphics();
     bg.fillStyle(0x0e1430, 0.96);
@@ -701,16 +767,12 @@ export class Play extends Scene {
     bg.lineStyle(1.5, COLORS.lineGlow, 0.55);
     bg.strokeRoundedRect(-cardW / 2, top, cardW, cardH, 22);
 
-    const card = this.add.container(width / 2, height / 2 + 26, [bg, name, story, button]).setDepth(40);
-    card.setAlpha(0);
+    const card = this.add.container(w / 2, h / 2, [bg, name, story, button.container]).setDepth(40);
     this.storyCard = card;
 
-    this.tweens.add({
-      targets: card,
-      alpha: 1,
-      y: height / 2,
-      duration: 1500,
-      ease: 'Sine.out',
-    });
+    if (rebuild) return;
+
+    card.setAlpha(0).setY(h / 2 + 26);
+    this.tweens.add({ targets: card, alpha: 1, y: h / 2, duration: 1500, ease: 'Sine.out' });
   }
 }

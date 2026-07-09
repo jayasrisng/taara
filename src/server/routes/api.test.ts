@@ -1,0 +1,234 @@
+/**
+ * End-to-end route tests.
+ *
+ * `@devvit/web/server` is stubbed — an in-memory Redis, a switchable current
+ * user, a switchable subreddit — so the real Hono handlers run start to finish
+ * without a Devvit runtime. This covers the things unit tests cannot: routing,
+ * status codes, the JSON shapes the client depends on, the spoiler rule, and
+ * the dev-only gate on the night override.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CONSTELLATION_DATA } from '../../shared/constellationData';
+import { createFakeRedis } from '../core/fakeRedis';
+
+type SubmittedComment = { id: string; text: string; runAs?: string };
+
+const live = {
+  redis: createFakeRedis(),
+  username: 'ana' as string | undefined,
+  subredditName: 'taara_connect_dev',
+  postId: 't3_abc' as string | undefined,
+  comments: [] as SubmittedComment[],
+};
+
+vi.mock('@devvit/web/server', () => ({
+  // Delegate so each test can swap in a fresh fake.
+  redis: {
+    get: (...a: Parameters<typeof live.redis.get>) => live.redis.get(...a),
+    set: (...a: Parameters<typeof live.redis.set>) => live.redis.set(...a),
+    mGet: (...a: Parameters<typeof live.redis.mGet>) => live.redis.mGet(...a),
+    incrBy: (...a: Parameters<typeof live.redis.incrBy>) => live.redis.incrBy(...a),
+    hGetAll: (...a: Parameters<typeof live.redis.hGetAll>) => live.redis.hGetAll(...a),
+    hSet: (...a: Parameters<typeof live.redis.hSet>) => live.redis.hSet(...a),
+    zAdd: (...a: Parameters<typeof live.redis.zAdd>) => live.redis.zAdd(...a),
+    zRange: (...a: Parameters<typeof live.redis.zRange>) => live.redis.zRange(...a),
+  },
+  reddit: {
+    getCurrentUsername: async () => live.username,
+    submitComment: async (comment: SubmittedComment) => {
+      live.comments.push(comment);
+      return { id: `t1_${live.comments.length}`, permalink: `/r/x/comments/abc/_/c${live.comments.length}/` };
+    },
+  },
+  context: {
+    get postId() {
+      return live.postId;
+    },
+    get subredditName() {
+      return live.subredditName;
+    },
+  },
+}));
+
+const { api } = await import('./api');
+
+const post = (body: unknown) =>
+  api.request('/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+const share = () => api.request('/share', { method: 'POST' });
+
+const solve = { difficulty: 'hard', timeMs: 42_000, whispers: 1, glitches: 2 };
+
+describe('routes', () => {
+  beforeEach(() => {
+    live.redis = createFakeRedis();
+    live.username = 'ana';
+    live.subredditName = 'taara_connect_dev';
+    live.postId = 't3_abc';
+    live.comments = [];
+  });
+
+  it('GET /init returns tonight', async () => {
+    const res = await api.request('/init');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.type).toBe('init');
+    expect(body.username).toBe('ana');
+    expect(body.night).toBeGreaterThan(0);
+    expect(body.label).toBe(`TaaraNight #${body.night}`);
+    expect(body.msUntilNextNight).toBeGreaterThan(0);
+    expect(body.postId).toBe('t3_abc');
+    expect(body.tonight).toBeNull();
+  });
+
+  it('never leaks a constellation name or story', async () => {
+    const payload = JSON.stringify(await (await api.request('/init')).json());
+    for (const c of CONSTELLATION_DATA.constellations) {
+      expect(payload).not.toContain(c.name);
+      expect(payload).not.toContain(c.story.slice(0, 24));
+    }
+  });
+
+  it('POST /complete records once, then reports alreadyPlayed', async () => {
+    const first = await (await post(solve)).json();
+    expect(first.recorded).toBe(true);
+    expect(first.alreadyPlayed).toBe(false);
+    expect(first.jwala.current).toBe(1);
+    expect(first.community.playersTonight).toBe(1);
+
+    const second = await (await post({ ...solve, timeMs: 1 })).json();
+    expect(second.alreadyPlayed).toBe(true);
+    expect(second.result.timeMs).toBe(42_000);
+    expect(second.community.playersTonight).toBe(1);
+  });
+
+  it('GET /init then reflects the stored result', async () => {
+    await post(solve);
+    const body = await (await api.request('/init')).json();
+    expect(body.tonight.timeMs).toBe(42_000);
+    expect(body.jwala.current).toBe(1);
+  });
+
+  it('POST /complete rejects bad payloads with 400', async () => {
+    expect((await post({ ...solve, difficulty: 'nightmare' })).status).toBe(400);
+    expect((await post({ ...solve, whispers: 9 })).status).toBe(400);
+    expect((await post({ ...solve, timeMs: -5 })).status).toBe(400);
+    const res = await api.request('/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('honours the night override in the dev subreddit', async () => {
+    const init = await (await api.request('/init')).json();
+    const yesterday = await (await post({ ...solve, night: init.night - 1 })).json();
+    expect(yesterday.recorded).toBe(true);
+    expect(yesterday.jwala.current).toBe(1);
+
+    const tonight = await (await post(solve)).json();
+    expect(tonight.jwala.current).toBe(2);
+    expect(tonight.jwala.lastNight).toBe(init.night);
+  });
+
+  it('refuses the night override outside the dev subreddit', async () => {
+    live.subredditName = 'TaaraNight';
+    const res = await post({ ...solve, night: 3 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).message).toMatch(/dev-only/);
+  });
+
+  it('plays but does not record for logged-out visitors', async () => {
+    live.username = undefined;
+    const body = await (await post(solve)).json();
+    expect(body.recorded).toBe(false);
+    expect(body.jwala.current).toBe(0);
+
+    const mysky = await (await api.request('/mysky')).json();
+    expect(mysky.entries).toEqual([]);
+    expect(mysky.total).toBeGreaterThan(15);
+  });
+
+  it('GET /mysky and /leaderboards reflect a play', async () => {
+    await post(solve);
+
+    const mysky = await (await api.request('/mysky')).json();
+    expect(mysky.entries).toHaveLength(1);
+    expect(mysky.entries[0].constellationId).toBeTruthy();
+
+    const boards = await (await api.request('/leaderboards')).json();
+    expect(boards.fastest).toEqual([{ username: 'ana', value: 42_000, rank: 1 }]);
+    expect(boards.fewestWhispers).toEqual([{ username: 'ana', value: 1, rank: 1 }]);
+    expect(boards.longestJwala).toEqual([{ username: 'ana', value: 1, rank: 1 }]);
+  });
+});
+
+describe('POST /share', () => {
+  beforeEach(() => {
+    live.redis = createFakeRedis();
+    live.username = 'ana';
+    live.subredditName = 'taara_connect_dev';
+    live.postId = 't3_abc';
+    live.comments = [];
+  });
+
+  it('comments the card on the post, as the player', async () => {
+    await post(solve);
+
+    const res = await share();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.alreadyShared).toBe(false);
+    expect(body.permalink).toBeTruthy();
+
+    expect(live.comments).toHaveLength(1);
+    expect(live.comments[0]).toMatchObject({ id: 't3_abc', runAs: 'USER' });
+    expect(live.comments[0]!.text).toBe(body.text);
+    expect(body.text).toContain('Jwala streak: 1 night');
+    expect(body.text).toContain('1 Whisper used');
+  });
+
+  it('never spoils the constellation in the comment', async () => {
+    await post(solve);
+    const body = await (await share()).json();
+    for (const c of CONSTELLATION_DATA.constellations) {
+      expect(body.text).not.toContain(c.name);
+      expect(body.text).not.toContain(c.story.slice(0, 24));
+    }
+  });
+
+  it('posts one card per night, however many times it is asked', async () => {
+    await post(solve);
+    const first = await (await share()).json();
+    const second = await (await share()).json();
+
+    expect(second.alreadyShared).toBe(true);
+    expect(second.permalink).toBe(first.permalink);
+    expect(live.comments).toHaveLength(1);
+  });
+
+  it('refuses to share a night the player has not revealed', async () => {
+    const res = await share();
+    expect(res.status).toBe(400);
+    expect((await res.json()).message).toMatch(/Reveal tonight/);
+    expect(live.comments).toEqual([]);
+  });
+
+  it('refuses when logged out', async () => {
+    live.username = undefined;
+    expect((await share()).status).toBe(400);
+    expect(live.comments).toEqual([]);
+  });
+
+  it('refuses when there is no post to comment on', async () => {
+    await post(solve);
+    live.postId = undefined;
+    expect((await share()).status).toBe(400);
+    expect(live.comments).toEqual([]);
+  });
+});

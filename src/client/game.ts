@@ -1,32 +1,61 @@
-import { Boot } from './scenes/Boot';
-import { GameOver } from './scenes/GameOver';
-import { Game as MainGame } from './scenes/Game';
 import { MainMenu } from './scenes/MainMenu';
 import { Play } from './scenes/Play';
+import { Results } from './scenes/Results';
 import { ConstellationDebug } from './scenes/ConstellationDebug';
 import * as Phaser from 'phaser';
 import { AUTO, Game } from 'phaser';
-import { Preloader } from './scenes/Preloader';
+import { DPR } from './ui/display';
 
-//  Find out more information about the Game Config at:
-//  https://docs.phaser.io/api-documentation/typedef/types-core#gameconfig
-const config: Phaser.Types.Core.GameConfig = {
-  type: AUTO,
-  parent: 'game-container',
-  backgroundColor: '#070b1f',
-  scale: {
-    // Keep a fixed game resolution but automatically scale it to fit within the available
-    // web-view / device while maintaining aspect ratio.
-    mode: Phaser.Scale.RESIZE,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
-    width: 1024,
-    height: 768,
-  },
-  scene: [Boot, Preloader, MainMenu, Play, MainGame, GameOver, ConstellationDebug],
-};
+/**
+ * The canvas is a device-pixel backing store displayed at CSS size.
+ *
+ * Phaser 4's `RESIZE` scale mode sets `canvas.width` to the parent's *CSS*
+ * width and never writes `canvas.style`, so on a Retina screen every pixel is
+ * stretched by the browser. `NONE` + `scale.resize()` is the mode that writes
+ * both: it sets `canvas.width = w` and `canvas.style.width = w * zoom`, so a
+ * game size of `css * DPR` with `zoom = 1 / DPR` lands the canvas at the right
+ * display size with a full-resolution backing store.
+ *
+ * Scenes never see device pixels: `onLayout` zooms the main camera by DPR so
+ * they lay out in CSS pixels. See `ui/display.ts`.
+ */
+function gameSize(parent: HTMLElement): { width: number; height: number } {
+  const rect = parent.getBoundingClientRect();
+  return {
+    width: Math.max(1, Math.round(rect.width * DPR)),
+    height: Math.max(1, Math.round(rect.height * DPR)),
+  };
+}
 
-const StartGame = (parent: string) => {
-  return new Game({ ...config, parent });
+const StartGame = (parentId: string): Game => {
+  const parent = document.getElementById(parentId)!;
+  const { width, height } = gameSize(parent);
+
+  const game = new Game({
+    type: AUTO,
+    parent,
+    backgroundColor: '#070b1f',
+    scale: {
+      mode: Phaser.Scale.NONE,
+      autoCenter: Phaser.Scale.NO_CENTER,
+      width,
+      height,
+      zoom: 1 / DPR,
+    },
+    scene: [MainMenu, Play, Results, ConstellationDebug],
+  });
+
+  // `NONE` never tracks the parent on its own, so we drive it. This also covers
+  // the mobile address-bar collapse and the desktop/mobile playtest toggle,
+  // which resize the container without firing a window `resize`.
+  const observer = new ResizeObserver(() => {
+    const next = gameSize(parent);
+    game.scale.resize(next.width, next.height);
+  });
+  observer.observe(parent);
+  game.events.once(Phaser.Core.Events.DESTROY, () => observer.disconnect());
+
+  return game;
 };
 
 document.addEventListener('DOMContentLoaded', () => {

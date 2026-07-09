@@ -15,3 +15,9 @@ body {
   width: 100%;
   height: 100%;
 }
+
+/* Phaser sizes the canvas itself (device pixels backing a CSS-pixel box);
+   `block` keeps the inline-baseline gap from creeping into the container. */
+#game-container canvas {
+  display: block;
+}

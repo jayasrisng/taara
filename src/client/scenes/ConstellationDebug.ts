@@ -10,220 +10,150 @@ import {
   getConstellationCount,
 } from '../../shared/constellationLoader';
 import type { Constellation } from '../../shared/constellations';
+import { crispText } from '../ui/display';
+import { clamp, onLayout, type Viewport } from '../ui/layout';
 
 export class ConstellationDebug extends Scene {
   private currentIndex = 0;
   private constellation: Constellation | null = null;
-  private stars: GameObjects.GameObject[] = [];
-  private lines: GameObjects.Line[] = [];
-  private titleText: GameObjects.Text | null = null;
-  private difficultyText: GameObjects.Text | null = null;
-  private storyText: GameObjects.Text | null = null;
-  private instructionsText: GameObjects.Text | null = null;
+  private view: Viewport = { w: 0, h: 0 };
+  private drawn: GameObjects.GameObject[] = [];
 
   constructor() {
     super('ConstellationDebug');
   }
 
   init(): void {
-    // Reset state
-    this.stars = [];
-    this.lines = [];
-    this.titleText = null;
-    this.difficultyText = null;
-    this.storyText = null;
-    this.instructionsText = null;
+    this.drawn = [];
   }
 
-  create() {
+  create(): void {
     // Validate constellation data on load
     try {
       loadConstellations();
     } catch (error) {
       console.error('Constellation validation failed:', error);
-      this.add
-        .text(this.scale.width / 2, this.scale.height / 2, 'ERROR: Invalid constellation data\nCheck console for details', {
+      onLayout(this, ({ w, h }) => {
+        crispText(this, w / 2, h / 2, 'ERROR: Invalid constellation data\nCheck console for details', {
           fontSize: '24px',
           color: '#ff0000',
           align: 'center',
-        })
-        .setOrigin(0.5);
+        }).setOrigin(0.5);
+      });
       return;
     }
 
-    this.showConstellation(this.currentIndex);
     this.setupControls();
-    this.scale.on('resize', () => this.refreshLayout());
-  }
-
-  private showConstellation(index: number): void {
-    this.constellation = getConstellationByIndex(index);
-
-    // Clear previous visualization
-    this.stars.forEach((star) => star.destroy());
-    this.lines.forEach((line) => line.destroy());
-    this.stars = [];
-    this.lines = [];
-
-    this.drawConstellation();
-    this.updateText();
-  }
-
-  private drawConstellation(): void {
-    if (!this.constellation) return;
-
-    const { width, height } = this.scale;
-
-    // Define the constellation drawing area (centered, with padding)
-    const padding = 100;
-    const drawAreaSize = Math.min(width - padding * 2, height - padding * 2, 600);
-    const offsetX = (width - drawAreaSize) / 2;
-    const offsetY = 80; // Leave room for title at top
-
-    // Draw background for constellation area
-    this.add.rectangle(
-      width / 2,
-      offsetY + drawAreaSize / 2,
-      drawAreaSize,
-      drawAreaSize,
-      0x000011,
-      0.8
-    );
-
-    // Draw connections first (so they appear behind stars)
-    this.constellation.connections.forEach((conn) => {
-      const star1 = this.constellation!.stars[conn.from];
-      const star2 = this.constellation!.stars[conn.to];
-
-      if (!star1 || !star2) return;
-
-      const x1 = offsetX + star1.x * drawAreaSize;
-      const y1 = offsetY + star1.y * drawAreaSize;
-      const x2 = offsetX + star2.x * drawAreaSize;
-      const y2 = offsetY + star2.y * drawAreaSize;
-
-      const line = this.add.line(0, 0, x1, y1, x2, y2, 0x4488ff, 0.6);
-      line.setLineWidth(2);
-      this.lines.push(line);
-    });
-
-    // Draw stars
-    this.constellation.stars.forEach((star, index) => {
-      const x = offsetX + star.x * drawAreaSize;
-      const y = offsetY + star.y * drawAreaSize;
-
-      // Star glow
-      const glow = this.add.arc(x, y, 8, 0, 360, false, 0xffffff, 0.3);
-      this.stars.push(glow);
-
-      // Star core
-      const core = this.add.arc(x, y, 4, 0, 360, false, 0xffffff, 1.0);
-      this.stars.push(core);
-
-      // Star index label (for debugging)
-      const label = this.add.text(x + 10, y - 10, `${index}`, {
-        fontSize: '12px',
-        color: '#888888',
-      });
-      this.stars.push(label);
+    onLayout(this, (view) => {
+      this.view = view;
+      this.render();
     });
   }
 
-  private updateText(): void {
+  private render(): void {
+    this.constellation = getConstellationByIndex(this.currentIndex);
+    this.drawn.forEach((o) => o.destroy());
+    this.drawn = [];
+
     if (!this.constellation) return;
+    const { w, h } = this.view;
 
-    const { width } = this.scale;
+    const titleSize = clamp(18, w * 0.05, 28);
+    const title = crispText(this, w / 2, clamp(8, h * 0.02, 20), this.constellation.name, {
+      fontSize: `${titleSize}px`,
+      color: '#ffffff',
+      fontFamily: 'Arial',
+    }).setOrigin(0.5, 0);
+    this.drawn.push(title);
 
-    // Title
-    if (!this.titleText) {
-      this.titleText = this.add
-        .text(width / 2, 30, '', {
-          fontSize: '28px',
-          color: '#ffffff',
-          fontFamily: 'Arial',
-        })
-        .setOrigin(0.5);
-    }
-    this.titleText.setText(`${this.constellation.name}`);
+    const meta = crispText(
+      this,
+      w / 2,
+      title.y + title.height + 6,
+      `${this.constellation.difficulty.toUpperCase()} | ${this.constellation.stars.length} stars | ${this.constellation.connections.length} connections`,
+      {
+        fontSize: '16px',
+        color:
+          this.constellation.difficulty === 'easy'
+            ? '#00ff00'
+            : this.constellation.difficulty === 'medium'
+              ? '#ffaa00'
+              : '#ff0000',
+        fontFamily: 'Arial',
+        align: 'center',
+        wordWrap: { width: w - 32 },
+      }
+    ).setOrigin(0.5, 0);
+    this.drawn.push(meta);
 
-    // Difficulty badge
-    if (!this.difficultyText) {
-      this.difficultyText = this.add
-        .text(width / 2, 60, '', {
-          fontSize: '16px',
-          color: '#aaaaaa',
-          fontFamily: 'Arial',
-        })
-        .setOrigin(0.5);
-    }
-    const difficultyColor =
-      this.constellation.difficulty === 'easy'
-        ? '#00ff00'
-        : this.constellation.difficulty === 'medium'
-          ? '#ffaa00'
-          : '#ff0000';
-    this.difficultyText.setText(
-      `${this.constellation.difficulty.toUpperCase()} | ${this.constellation.stars.length} stars | ${this.constellation.connections.length} connections`
-    );
-    this.difficultyText.setColor(difficultyColor);
+    // Bottom block first, so the drawing area knows what is left.
+    const instructions = crispText(
+      this,
+      w / 2,
+      h - clamp(6, h * 0.015, 14),
+      `[${this.currentIndex + 1}/${getConstellationCount()}] Click/tap to cycle · ESC to return to menu`,
+      { fontSize: '12px', color: '#888888', fontFamily: 'Arial', align: 'center', wordWrap: { width: w - 24 } }
+    ).setOrigin(0.5, 1);
+    this.drawn.push(instructions);
 
-    // Story preview (bottom of screen)
-    if (!this.storyText) {
-      this.storyText = this.add
-        .text(width / 2, this.scale.height - 80, '', {
-          fontSize: '14px',
-          color: '#cccccc',
-          fontFamily: 'Arial',
-          align: 'center',
-          wordWrap: { width: width - 40 },
-        })
-        .setOrigin(0.5);
-    }
     const storyPreview =
       this.constellation.story.length > 200
         ? this.constellation.story.substring(0, 200) + '...'
         : this.constellation.story;
-    this.storyText.setText(storyPreview);
+    const story = crispText(this, w / 2, instructions.y - instructions.height - 10, storyPreview, {
+      fontSize: '14px',
+      color: '#cccccc',
+      fontFamily: 'Arial',
+      align: 'center',
+      wordWrap: { width: w - 40 },
+    }).setOrigin(0.5, 1);
+    this.drawn.push(story);
 
-    // Navigation instructions
-    if (!this.instructionsText) {
-      this.instructionsText = this.add
-        .text(width / 2, this.scale.height - 20, '', {
-          fontSize: '12px',
-          color: '#888888',
-          fontFamily: 'Arial',
-        })
-        .setOrigin(0.5);
-    }
-    const totalCount = getConstellationCount();
-    this.instructionsText.setText(
-      `[${this.currentIndex + 1}/${totalCount}] Click/tap to cycle through constellations · ESC to return to menu`
-    );
+    const top = meta.y + meta.height + 12;
+    const bottom = story.y - story.height - 12;
+    const size = Math.max(80, Math.min(w - 32, bottom - top, 600));
+    const ox = (w - size) / 2;
+    const oy = top + Math.max(0, (bottom - top - size) / 2);
+
+    this.drawn.push(this.add.rectangle(w / 2, oy + size / 2, size, size, 0x000011, 0.8));
+
+    this.constellation.connections.forEach((conn) => {
+      const a = this.constellation!.stars[conn.from];
+      const b = this.constellation!.stars[conn.to];
+      if (!a || !b) return;
+      const line = this.add.line(
+        0,
+        0,
+        ox + a.x * size,
+        oy + a.y * size,
+        ox + b.x * size,
+        oy + b.y * size,
+        0x4488ff,
+        0.6
+      );
+      line.setLineWidth(2);
+      this.drawn.push(line);
+    });
+
+    this.constellation.stars.forEach((star, index) => {
+      const x = ox + star.x * size;
+      const y = oy + star.y * size;
+      this.drawn.push(this.add.arc(x, y, 8, 0, 360, false, 0xffffff, 0.3));
+      this.drawn.push(this.add.arc(x, y, 4, 0, 360, false, 0xffffff, 1.0));
+      this.drawn.push(crispText(this, x + 10, y - 10, `${index}`, { fontSize: '12px', color: '#888888' }));
+    });
   }
 
   private setupControls(): void {
-    // Keyboard controls
-    this.input.keyboard?.on('keydown-LEFT', () => this.previousConstellation());
-    this.input.keyboard?.on('keydown-RIGHT', () => this.nextConstellation());
+    this.input.keyboard?.on('keydown-LEFT', () => this.step(-1));
+    this.input.keyboard?.on('keydown-RIGHT', () => this.step(1));
     this.input.keyboard?.on('keydown-ESC', () => this.scene.start('MainMenu'));
-
-    // Mouse/touch controls
-    this.input.on('pointerdown', () => this.nextConstellation());
+    this.input.on('pointerdown', () => this.step(1));
   }
 
-  private nextConstellation(): void {
-    const totalCount = getConstellationCount();
-    this.currentIndex = (this.currentIndex + 1) % totalCount;
-    this.showConstellation(this.currentIndex);
-  }
-
-  private previousConstellation(): void {
-    const totalCount = getConstellationCount();
-    this.currentIndex = (this.currentIndex - 1 + totalCount) % totalCount;
-    this.showConstellation(this.currentIndex);
-  }
-
-  private refreshLayout(): void {
-    this.scene.restart();
+  private step(delta: number): void {
+    const total = getConstellationCount();
+    this.currentIndex = (this.currentIndex + delta + total) % total;
+    this.render();
   }
 }
