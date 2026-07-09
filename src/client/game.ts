@@ -4,6 +4,7 @@ import { Results } from './scenes/Results';
 import { ConstellationDebug } from './scenes/ConstellationDebug';
 import * as Phaser from 'phaser';
 import { AUTO, Game } from 'phaser';
+import { ambience } from './audio/ambience';
 import { DPR } from './ui/display';
 
 /**
@@ -58,6 +59,18 @@ const StartGame = (parentId: string): Game => {
   return game;
 };
 
+/**
+ * Browsers will not make a sound until the player has touched the page, so the
+ * night starts breathing on the first tap rather than on load. `unlock` builds
+ * nothing when sound is muted, and nothing at all where Web Audio is missing.
+ */
+function wakeSoundOnFirstGesture(): void {
+  const wake = (): void => ambience.unlock();
+  document.addEventListener('pointerdown', wake, { once: true });
+  document.addEventListener('keydown', wake, { once: true });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   StartGame('game-container');
+  wakeSoundOnFirstGesture();
 });

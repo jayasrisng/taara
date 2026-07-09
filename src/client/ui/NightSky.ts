@@ -13,10 +13,12 @@ import { Scene, GameObjects } from 'phaser';
 import { mulberry32 } from '../../shared/rng';
 import { texScale } from './display';
 import type { Viewport } from './layout';
+import { prefs } from './prefs';
 import { TEX, ensureTextures } from './textures';
 
 const SKY_TOP = 0x05060f;
 const SKY_BOTTOM = 0x161a3e;
+const VIGNETTE_ALPHA = 0.38;
 
 interface BgStar {
   nx: number; // normalized 0–1 across the screen
@@ -55,10 +57,17 @@ export class NightSky {
       const baseAlpha = 0.35 + this.rng() * 0.5;
       img.setScale(texScale(scale)).setAlpha(baseAlpha);
       this.stars.push({ nx: this.rng(), ny: this.rng(), img });
+
+      // Keep drawing from the rng even when still, so a reduced-motion sky has
+      // its stars in the same places as everybody else's.
+      const dim = baseAlpha * (0.3 + this.rng() * 0.3);
+      const duration = 1600 + this.rng() * 3200;
+      if (!prefs.animate) continue;
+
       scene.tweens.add({
         targets: img,
-        alpha: baseAlpha * (0.3 + this.rng() * 0.3),
-        duration: 1600 + this.rng() * 3200,
+        alpha: dim,
+        duration,
         yoyo: true,
         repeat: -1,
         ease: 'Sine.inOut',
@@ -67,7 +76,7 @@ export class NightSky {
 
     this.vignette = scene.add.graphics();
 
-    this.scheduleShootingStar();
+    if (prefs.animate) this.scheduleShootingStar();
   }
 
   layout(view: Viewport): void {
@@ -85,11 +94,16 @@ export class NightSky {
 
     for (const st of this.stars) st.img.setPosition(st.nx * w, st.ny * h);
 
-    // Soft edge darkening for depth/focus.
+    // Soft edge darkening for depth/focus. Each band fades to nothing where it
+    // meets the sky — a constant alpha leaves a hard seam, which a high-DPI
+    // canvas shows off beautifully.
     this.vignette.clear();
     const band = Math.max(w, h) * 0.18;
-    this.vignette.fillStyle(0x03040c, 0.35);
+    const dark = 0x03040c;
+
+    this.vignette.fillGradientStyle(dark, dark, dark, dark, VIGNETTE_ALPHA, VIGNETTE_ALPHA, 0, 0);
     this.vignette.fillRect(0, 0, w, band);
+    this.vignette.fillGradientStyle(dark, dark, dark, dark, 0, 0, VIGNETTE_ALPHA, VIGNETTE_ALPHA);
     this.vignette.fillRect(0, h - band, w, band);
   }
 

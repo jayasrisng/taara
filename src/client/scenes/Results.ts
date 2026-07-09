@@ -16,7 +16,7 @@
 
 import * as Phaser from 'phaser';
 import { Scene, GameObjects } from 'phaser';
-import { showToast } from '@devvit/web/client';
+import { showLoginPrompt, showToast } from '@devvit/web/client';
 import type {
   CompleteResponse,
   InitResponse,
@@ -29,12 +29,12 @@ import type { Constellation, Difficulty } from '../../shared/constellations';
 import { getConstellationById } from '../../shared/constellationLoader';
 import { EMPTY_JWALA, type JwalaState } from '../../shared/jwala';
 import { millisUntilNextNight } from '../../shared/nightSeed';
-import { moodFor } from '../../shared/mood';
 import { fetchInit, fetchLeaderboards, fetchMySky, postShare } from '../api';
 import { NightSky } from '../ui/NightSky';
 import { untilNextSky } from '../ui/countdown';
 import { crispText } from '../ui/display';
 import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { mmss, plural, summariseNight } from '../ui/nightSummary';
 import { Pill } from '../ui/Pill';
 import { ScrollPanel } from '../ui/ScrollPanel';
 
@@ -53,6 +53,7 @@ const COLORS = {
 };
 
 const SHARE_LABEL = '🌙  Share tonight';
+const SIGN_IN_LABEL = 'Sign in to share';
 
 const TABS = [
   { id: 'tonight', label: 'Tonight' },
@@ -91,19 +92,6 @@ export type ResultsData = {
   whispers: number;
   glitches: number;
 };
-
-function mmss(ms: number): string {
-  const total = Math.max(0, Math.round(ms / 1000));
-  return `${Math.floor(total / 60)}:${(total % 60).toString().padStart(2, '0')}`;
-}
-
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? '' : 's'}`;
-}
-
-function titleCase(word: string): string {
-  return word.charAt(0).toUpperCase() + word.slice(1);
-}
 
 export class Results extends Scene {
   private params!: ResultsData;
@@ -202,28 +190,36 @@ export class Results extends Scene {
     if (this.tab === 'stargazers') this.relayout();
   }
 
-  /** Tonight's result: the server's stored copy, or what Play measured. */
-  private result(): NightResult {
-    return (
-      this.server?.tonight ?? {
-        night: this.params.night,
-        difficulty: this.params.difficulty,
-        timeMs: this.params.timeMs,
-        whispers: this.params.whispers,
-        glitches: this.params.glitches,
-        starsConnected: 0,
-        completedAt: Date.now(),
-      }
-    );
+  /**
+   * The solve this screen was opened by — always what Play measured.
+   *
+   * Never the server's stored result. That is write-once (the first solve of a
+   * night is the one that counts), so on a replay it describes an earlier solve
+   * at a difficulty the player may not have just played.
+   */
+  private played(): NightResult {
+    return {
+      night: this.params.night,
+      difficulty: this.params.difficulty,
+      timeMs: this.params.timeMs,
+      whispers: this.params.whispers,
+      glitches: this.params.glitches,
+      starsConnected: this.server?.tonight?.starsConnected ?? 0,
+      completedAt: this.server?.tonight?.completedAt ?? Date.now(),
+    };
   }
 
   private jwala(): JwalaState {
     return this.server?.jwala ?? EMPTY_JWALA;
   }
 
-  /** True once we know the night is safely written down under a Reddit name. */
-  private recorded(): boolean {
-    return !!this.server?.username && !!this.server.tonight;
+  /**
+   * Who is looking at this screen — which decides whether it shows a flame, an
+   * invitation to sign in, or simply the fact that it is still asking.
+   */
+  private viewer(): 'loading' | 'anonymous' | 'known' {
+    if (!this.server) return 'loading';
+    return this.server.username ? 'known' : 'anonymous';
   }
 
   private tickCountdown(): void {
@@ -291,7 +287,7 @@ export class Results extends Scene {
 
     let top = clamp(10, h * 0.035, 30);
 
-    const title = crispText(this, w / 2, top, `TaaraNight #${this.result().night}`, {
+    const title = crispText(this, w / 2, top, `TaaraNight #${this.params.night}`, {
       fontFamily: 'Georgia, "Times New Roman", serif',
       fontSize: `${clamp(22, Math.min(w * 0.085, h * 0.05), 32)}px`,
       color: COLORS.text,
@@ -344,14 +340,17 @@ export class Results extends Scene {
     this.ui.push(back);
     bottom -= back.height + 12;
 
+    // A signed-out player cannot comment, so the button asks for the one thing
+    // that would let them — rather than offering a share that will be refused.
+    const anonymous = this.viewer() === 'anonymous';
     const share = new Pill(
       this,
-      this.shared ? '✓ Shared' : SHARE_LABEL,
+      anonymous ? SIGN_IN_LABEL : this.shared ? '✓ Shared' : SHARE_LABEL,
       { height: SHARE_H, minWidth: Math.min(contentW, 280), fontSize: 15 },
-      () => void this.share()
+      () => (anonymous ? showLoginPrompt() : void this.share())
     );
     share.setPosition(w / 2, bottom - SHARE_H / 2);
-    share.setEnabled(!this.shared && !this.sharing);
+    share.setEnabled(anonymous || (this.viewer() === 'known' && !this.shared && !this.sharing));
     this.sharePill = share;
     this.pills.push(share);
     bottom -= SHARE_H + 10;
@@ -417,7 +416,6 @@ export class Results extends Scene {
 
   private fillTonight(w: number): number {
     this.panelWidth = w;
-    const result = this.result();
     const jwala = this.jwala();
     const community = this.server?.community;
 
@@ -428,7 +426,15 @@ export class Results extends Scene {
     this.panel.add(flame);
     y += flame.height + 2;
 
-    if (this.recorded()) {
+    const viewer = this.viewer();
+
+    if (viewer === 'loading') {
+      y += this.panelText(y, 'Counting your nights…', 14, COLORS.faint).height;
+    } else if (viewer === 'anonymous') {
+      // The invitation to act is the share pill below, outside the panel — a
+      // ScrollPanel's content is deliberately deaf to taps (see ScrollPanel).
+      y += this.panelText(y, 'Sign in to keep your Jwala burning', 14, COLORS.muted, { wrap: w - 20 }).height;
+    } else {
       const count = crispText(this, w / 2, y, String(jwala.current), {
         fontFamily: 'Georgia, serif',
         fontSize: '40px',
@@ -444,8 +450,11 @@ export class Results extends Scene {
       if (jwala.longest > jwala.current) {
         y += 2 + this.panelText(y, `Longest: ${plural(jwala.longest, 'night')}`, 12, COLORS.faint).height;
       }
-    } else {
-      y += this.panelText(y, 'Sign in to keep your Jwala burning', 14, COLORS.muted, { wrap: w - 20 }).height;
+      // Signed in, but the night never reached Redis. Say so — the share card is
+      // built from that record, so the player would otherwise learn it the hard way.
+      if (!this.server?.tonight) {
+        y += 6 + this.panelText(y, 'Tonight is not written down yet', 12, COLORS.faint, { wrap: w - 20 }).height;
+      }
     }
 
     y += 14;
@@ -467,18 +476,13 @@ export class Results extends Scene {
     }
 
     y += 16;
-    y += this.panelText(y, this.describeNight(result), 13, COLORS.muted, { wrap: w - 20 }).height;
+    const summary = summariseNight(this.played(), this.server?.tonight ?? null);
+    y += this.panelText(y, summary.headline, 13, COLORS.muted, { wrap: w - 20 }).height;
+    if (summary.note) {
+      y += 4 + this.panelText(y, summary.note, 12, COLORS.faint, { wrap: w - 20 }).height;
+    }
 
     return y + 8;
-  }
-
-  /** "Hard · 2:14 · 1 Whisper · Mood: Dreamy" — the timer only where it belongs. */
-  private describeNight(result: NightResult): string {
-    const parts = [titleCase(result.difficulty)];
-    if (result.difficulty === 'hard') parts.push(mmss(result.timeMs));
-    parts.push(result.whispers === 0 ? 'no Whispers' : plural(result.whispers, 'Whisper'));
-    parts.push(`Mood: ${moodFor(result)}`);
-    return parts.join('  ·  ');
   }
 
   /* ---- My Sky ---- */
@@ -496,7 +500,10 @@ export class Results extends Scene {
 
     if (entries.length === 0) {
       y += this.panelText(y, 'Your sky is still dark', 17, COLORS.text, { family: 'Georgia, serif' }).height;
-      const hint = 'Sign in and reveal a constellation to begin gathering nights.';
+      const hint =
+        this.viewer() === 'known'
+          ? 'Every constellation you reveal is kept here, night after night.'
+          : 'Sign in, and every constellation you reveal is kept here.';
       y += 8 + this.panelText(y, hint, 13, COLORS.faint, { wrap: Math.min(w - 30, 300) }).height;
       return y + 8;
     }

@@ -104,6 +104,35 @@ describe('store', () => {
         playersTonight: 2,
       });
     });
+
+    /**
+     * The record is the first solve of the night, at the difficulty it was
+     * actually played. A later solve at another difficulty must not rewrite it
+     * — the results screen reads this back, and a share card is built from it.
+     */
+    it('keeps the first solve’s difficulty when a second is played', async () => {
+      await store.recordCompletion('ana', NIGHT, play({ difficulty: 'hard', timeMs: 16_000 }));
+      const replay = await store.recordCompletion('ana', NIGHT, play({ difficulty: 'easy', timeMs: 90_000 }));
+
+      expect(replay.alreadyPlayed).toBe(true);
+      expect(replay.result.difficulty).toBe('hard');
+      expect(replay.result.timeMs).toBe(16_000);
+      expect(await store.loadResult(NIGHT, 'ana')).toMatchObject({ difficulty: 'hard', timeMs: 16_000 });
+    });
+
+    /**
+     * Fastest is a Hard-mode board. An Easy solve is recorded first, so the
+     * later Hard solve is never written — the board must stay empty rather than
+     * pick up a time from a night whose record is not a Hard one.
+     */
+    it('never files a Fastest time for a night recorded on Easy', async () => {
+      await store.recordCompletion('ana', NIGHT, play({ difficulty: 'easy', timeMs: 90_000, whispers: 0 }));
+      await store.recordCompletion('ana', NIGHT, play({ difficulty: 'hard', timeMs: 16_000 }));
+
+      const boards = await store.loadLeaderboards(NIGHT);
+      expect(boards.fastest).toEqual([]);
+      expect(boards.fewestWhispers).toEqual([]);
+    });
   });
 
   describe('Jwala streak across nights', () => {

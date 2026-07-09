@@ -1,11 +1,13 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
   "name": "taara-connect",
+  "marketingAssets": {
+    "icon": "assets/icon.png"
+  },
   "post": {
     "dir": "dist/client",
     "entrypoints": {
       "default": {
-        "inline": true,
         "entry": "splash.html"
       },
       "game": {

@@ -155,6 +155,37 @@ describe('routes', () => {
     expect(mysky.total).toBeGreaterThan(15);
   });
 
+  /**
+   * Regression, Step 7.5. Fastest is a Hard-mode board: an Easy solve with the
+   * outline showing is not the same race. Playing Easy — even in sixteen
+   * seconds, even after a Hard solve is on file — must never put a time on it.
+   */
+  it('POST /complete on Easy never files a Fastest time', async () => {
+    await post({ difficulty: 'easy', timeMs: 16_000, whispers: 0, glitches: 0 });
+
+    const boards = await (await api.request('/leaderboards')).json();
+    expect(boards.fastest).toEqual([]);
+
+    // The Hard replay is not recorded either — the night already has a record.
+    await post({ difficulty: 'hard', timeMs: 16_000, whispers: 0, glitches: 0 });
+    expect((await (await api.request('/leaderboards')).json()).fastest).toEqual([]);
+  });
+
+  /**
+   * Regression, Step 7.5. The stored record is write-once, so after Hard then
+   * Easy it still describes the Hard solve. That is correct — but it is the
+   * *record*, not the solve just played, and the results screen must not read
+   * it as one. See client/ui/nightSummary.test.ts for the other half.
+   */
+  it('POST /complete echoes the recorded solve, not the one just replayed', async () => {
+    await post({ difficulty: 'hard', timeMs: 16_000, whispers: 0, glitches: 0 });
+    const replay = await (await post({ difficulty: 'easy', timeMs: 90_000, whispers: 0, glitches: 0 })).json();
+
+    expect(replay.alreadyPlayed).toBe(true);
+    expect(replay.result.difficulty).toBe('hard');
+    expect((await (await api.request('/init')).json()).tonight.difficulty).toBe('hard');
+  });
+
   it('GET /mysky and /leaderboards reflect a play', async () => {
     await post(solve);
 

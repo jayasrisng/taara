@@ -17,10 +17,13 @@ import type { Difficulty } from '../../shared/constellations';
 import { generatePuzzle, type NightlyPuzzle, type PuzzleStar } from '../../shared/puzzleEngine';
 import { nightNumberAt } from '../../shared/nightSeed';
 import { mulberry32 } from '../../shared/rng';
+import { ambience, setSound } from '../audio/ambience';
 import { NightSky } from '../ui/NightSky';
+import { Onboarding, needsOnboarding } from '../ui/Onboarding';
 import { crispText, texScale } from '../ui/display';
 import { clamp, onLayout, type Viewport } from '../ui/layout';
 import { Pill } from '../ui/Pill';
+import { prefs } from '../ui/prefs';
 import { TEX } from '../ui/textures';
 import { postComplete } from '../api';
 import type { CompleteResponse } from '../../shared/api';
@@ -96,8 +99,12 @@ export class Play extends Scene {
   private hintText!: GameObjects.Text;
   private timerPill!: Pill;
   private backPill!: Pill;
+  private soundPill!: Pill;
   private whisperPill!: Pill;
   private storyCard: GameObjects.Container | null = null;
+
+  /** The three opening hints, on a first-ever play. Blocks the sky until read. */
+  private tutorial: Onboarding | null = null;
 
   private view: Viewport = { w: 0, h: 0 };
   private area = { ox: 0, oy: 0, size: 0 };
@@ -145,6 +152,7 @@ export class Play extends Scene {
     this.glitchHits = 0;
     this.solveMs = 0;
     this.submission = null;
+    this.tutorial = null;
   }
 
   create(): void {
@@ -168,7 +176,16 @@ export class Play extends Scene {
     this.createStars();
     this.createHud();
 
+    // A first-ever player is told what to do before the clock starts on them.
+    if (needsOnboarding()) {
+      this.tutorial = new Onboarding(this, () => {
+        this.tutorial = null;
+        this.startTime = performance.now();
+      });
+    }
+
     onLayout(this, (view) => this.layout(view));
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.tutorial?.destroy());
     this.registerInput();
 
     // Gentle entrance.
@@ -176,7 +193,7 @@ export class Play extends Scene {
   }
 
   override update(): void {
-    if (this.complete || !this.puzzle.params.timed) return;
+    if (this.tutorial || this.complete || !this.puzzle.params.timed) return;
     const seconds = Math.floor((performance.now() - this.startTime) / 1000);
     if (seconds !== this.lastShownSecond) {
       this.lastShownSecond = seconds;
@@ -201,6 +218,7 @@ export class Play extends Scene {
       this.starViews.push(view);
       this.byId.set(data.id, view);
 
+      if (!prefs.animate) return;
       this.tweens.add({
         targets: glow,
         scale: texScale(0.5),
@@ -228,12 +246,20 @@ export class Play extends Scene {
 
     this.backPill = new Pill(this, '‹ Back', { minWidth: 72 }, () => this.scene.start('MainMenu'));
 
+    this.soundPill = new Pill(this, soundIcon(), { minWidth: PILL_H, paddingX: 8 }, () => this.toggleSound());
+    this.soundPill.setActive(prefs.sound);
+
     this.timerPill = new Pill(this, '0:00', { minWidth: TIMER_W });
     this.timerPill.setVisible(this.puzzle.params.timed);
 
     this.whisperPill = new Pill(this, '', { minWidth: 150 }, () => this.useWhisper());
     this.updateWhisperButton();
     this.whisperPill.setVisible(!this.puzzle.params.showOutline && this.puzzle.params.maxWhispers > 0);
+  }
+
+  private toggleSound(): void {
+    setSound(!prefs.sound);
+    this.soundPill.setLabel(soundIcon()).setActive(prefs.sound);
   }
 
   private buildHintLabel(): string {
@@ -263,13 +289,16 @@ export class Play extends Scene {
     const topPad = clamp(10, h * 0.022, 18);
     const rowY = topPad + PILL_H / 2;
 
+    const controlGap = 8;
     this.backPill.setPosition(sidePad + this.backPill.width / 2, rowY);
+    this.soundPill.setPosition(sidePad + this.backPill.width + controlGap + this.soundPill.width / 2, rowY);
     this.timerPill.setPosition(w - sidePad - this.timerPill.width / 2, rowY);
 
     this.titleText.setFontSize(w < NARROW_W ? 17 : 20);
     this.hintText.setFontSize(w < NARROW_W ? 12 : 14);
 
-    const flank = Math.max(this.backPill.width, this.puzzle.params.timed ? this.timerPill.width : 0);
+    const leftGroup = this.backPill.width + controlGap + this.soundPill.width;
+    const flank = Math.max(leftGroup, this.puzzle.params.timed ? this.timerPill.width : 0);
     // The 32 is breathing room: a title that only *just* clears the pills reads
     // as a collision even when it technically isn't.
     const inline = this.titleText.width <= w - 2 * (sidePad + flank) - 32;
@@ -305,6 +334,7 @@ export class Play extends Scene {
     }
     // The card wraps its story to the viewport, so a resize has to rebuild it.
     if (this.storyCard) this.showStoryCard(true);
+    this.tutorial?.layout(view);
   }
 
   private hitRadius(): number {
@@ -374,8 +404,13 @@ export class Play extends Scene {
     return best;
   }
 
+  /** Scene-level pointer handlers fire under the tutorial card too. They mustn't. */
+  private busy(): boolean {
+    return this.complete || this.tutorial !== null;
+  }
+
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
-    if (this.complete) return;
+    if (this.busy()) return;
     const s = this.starAt(pointer.worldX, pointer.worldY);
     this.downStar = s;
     this.downX = pointer.worldX;
@@ -386,6 +421,7 @@ export class Play extends Scene {
   }
 
   private onPointerMove(pointer: Phaser.Input.Pointer): void {
+    if (this.busy()) return;
     if (this.dragging && this.downStar) this.drawRubber(this.downStar, pointer.worldX, pointer.worldY);
   }
 
@@ -394,7 +430,7 @@ export class Play extends Scene {
     const down = this.downStar;
     this.downStar = null;
     this.dragging = false;
-    if (this.complete) return;
+    if (this.busy()) return;
 
     const moved = Phaser.Math.Distance.Between(this.downX, this.downY, pointer.worldX, pointer.worldY);
 
@@ -452,15 +488,21 @@ export class Play extends Scene {
 
     if (this.solutionSet.has(key)) {
       this.connected.add(key);
-      const edge: Edge = { a, b, progress: 0 };
+      const edge: Edge = { a, b, progress: prefs.animate ? 0 : 1 };
       this.edges.push(edge);
-      this.tweens.add({
-        targets: edge,
-        progress: 1,
-        duration: 260,
-        ease: 'Sine.out',
-        onUpdate: () => this.redrawConnections(),
-      });
+      if (prefs.animate) {
+        this.tweens.add({
+          targets: edge,
+          progress: 1,
+          duration: 260,
+          ease: 'Sine.out',
+          onUpdate: () => this.redrawConnections(),
+        });
+      } else {
+        this.redrawConnections();
+      }
+      // One step up the scale per thread drawn: the sound of getting somewhere.
+      ambience.chime(this.connected.size - 1);
       this.pulseStar(a);
       this.pulseStar(b);
       if (this.connected.size === this.puzzle.solution.length) this.onComplete();
@@ -470,19 +512,25 @@ export class Play extends Scene {
   }
 
   private pulseStar(sv: StarView): void {
-    this.tweens.add({ targets: sv.container, scale: 1.4, duration: 130, yoyo: true, ease: 'Sine.out' });
+    if (prefs.animate) {
+      this.tweens.add({ targets: sv.container, scale: 1.4, duration: 130, yoyo: true, ease: 'Sine.out' });
+    }
     this.flashRing(sv, COLORS.accent);
   }
 
+  /**
+   * A ring blooming outward, or — when the player has asked for stillness — the
+   * same light arriving and leaving without going anywhere.
+   */
   private flashRing(sv: StarView, color: number): void {
     const ring = this.add
       .image(sv.container.x, sv.container.y, TEX.starSoft)
-      .setScale(texScale(0.2))
+      .setScale(texScale(prefs.animate ? 0.2 : 0.6))
       .setTint(color)
       .setAlpha(0.7);
     this.tweens.add({
       targets: ring,
-      scale: texScale(0.9),
+      ...(prefs.animate ? { scale: texScale(0.9) } : {}),
       alpha: 0,
       duration: 420,
       ease: 'Sine.out',
@@ -492,9 +540,11 @@ export class Play extends Scene {
 
   private wrongFeedback(a: StarView, b: StarView): void {
     if (a.data.isDecoy || b.data.isDecoy) this.glitchHits++;
-    this.shakeStar(a);
-    this.shakeStar(b);
-    this.cameras.main.shake(120, 0.003);
+    if (prefs.animate) {
+      this.shakeStar(a);
+      this.shakeStar(b);
+      this.cameras.main.shake(120, 0.003);
+    }
     if (a.data.isDecoy) this.glitchShimmer(a);
     else this.flashRing(a, COLORS.wrong);
     if (b.data.isDecoy) this.glitchShimmer(b);
@@ -518,17 +568,25 @@ export class Play extends Scene {
     sv.core.setTint(COLORS.glitch);
     sv.glow.setTint(COLORS.glitch);
     this.flashRing(sv, COLORS.glitch);
+
+    const restore = (): void => {
+      sv.container.setAngle(0);
+      sv.core.setTint(COLORS.starCore);
+      sv.glow.setTint(COLORS.starGlow);
+    };
+
+    if (!prefs.animate) {
+      this.time.delayedCall(360, restore);
+      return;
+    }
+
     this.tweens.add({
       targets: sv.container,
       angle: 9,
       duration: 45,
       yoyo: true,
       repeat: 3,
-      onComplete: () => {
-        sv.container.setAngle(0);
-        sv.core.setTint(COLORS.starCore);
-        sv.glow.setTint(COLORS.starGlow);
-      },
+      onComplete: restore,
     });
   }
 
@@ -612,9 +670,10 @@ export class Play extends Scene {
         this.tweens.add({ targets: sv.container, alpha: 0.1, duration: 700, ease: 'Sine.out' });
       } else {
         sv.container.setDepth(30);
+        if (!prefs.animate) sv.glow.setScale(texScale(0.72));
         this.tweens.add({
           targets: sv.glow,
-          scale: texScale(0.72),
+          ...(prefs.animate ? { scale: texScale(0.72) } : {}),
           alpha: 0.75,
           duration: 900,
           ease: 'Sine.out',
@@ -633,6 +692,7 @@ export class Play extends Scene {
       onUpdate: () => this.redrawConnections(),
     });
 
+    ambience.reveal();
     this.celebrate();
     this.submitResult();
     this.time.delayedCall(750, () => this.showStoryCard(false));
@@ -673,7 +733,9 @@ export class Play extends Scene {
     this.scene.start('Results', data);
   }
 
+  /** Sparks rising off the finished shape. Pure movement, so stillness skips it. */
   private celebrate(): void {
+    if (!prefs.animate) return;
     const reals = this.starViews.filter((s) => !s.data.isDecoy);
     if (reals.length === 0) return;
     const rng = mulberry32(this.puzzle.night * 911 + 7);
@@ -774,7 +836,19 @@ export class Play extends Scene {
 
     if (rebuild) return;
 
-    card.setAlpha(0).setY(h / 2 + 26);
-    this.tweens.add({ targets: card, alpha: 1, y: h / 2, duration: 1500, ease: 'Sine.out' });
+    // The story always arrives softly; under stillness it arrives without rising.
+    card.setAlpha(0);
+    if (prefs.animate) card.setY(h / 2 + 26);
+    this.tweens.add({
+      targets: card,
+      alpha: 1,
+      ...(prefs.animate ? { y: h / 2 } : {}),
+      duration: 1500,
+      ease: 'Sine.out',
+    });
   }
+}
+
+function soundIcon(): string {
+  return prefs.sound ? '🔊' : '🔇';
 }

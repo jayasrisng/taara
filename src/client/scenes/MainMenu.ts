@@ -4,10 +4,12 @@ import { showToast } from '@devvit/web/client';
 import type { InitResponse } from '../../shared/api';
 import type { Difficulty } from '../../shared/constellations';
 import { nightNumberAt } from '../../shared/nightSeed';
+import { setSound } from '../audio/ambience';
 import { NightSky } from '../ui/NightSky';
 import { crispText } from '../ui/display';
 import { clamp, onLayout, type Viewport } from '../ui/layout';
-import { makePill } from '../ui/Pill';
+import { Pill, makePill } from '../ui/Pill';
+import { prefs } from '../ui/prefs';
 import { fetchInit, postComplete } from '../api';
 
 interface DiffDef {
@@ -40,6 +42,12 @@ const NARROW_W = 380;
  */
 const NIGHT_WAIT_MS = 1500;
 
+/** Holds the community line's place while the server is still answering. */
+const LISTENING = 'Listening for tonight’s sky…';
+
+/** The two comfort settings, small and out of the way at the foot of the menu. */
+const TOGGLE_H = 34;
+
 export class MainMenu extends Scene {
   private sky!: NightSky;
   private ui: GameObjects.GameObject[] = [];
@@ -52,8 +60,9 @@ export class MainMenu extends Scene {
   private opening: Promise<InitResponse | null> | null = null;
   /** True once `night` is the post's night rather than the client's guess. */
   private synced = false;
-  /** A quiet line of tonight's shared numbers, once the server has answered. */
-  private communityLine: string | null = null;
+  /** Tonight's shared numbers — a loading line until the server answers, then null if it never does. */
+  private communityLine: string | null = LISTENING;
+  private soundPill: Pill | null = null;
 
   constructor() {
     super('MainMenu');
@@ -63,7 +72,8 @@ export class MainMenu extends Scene {
     this.ui = [];
     this.entered = false;
     this.synced = false;
-    this.communityLine = null;
+    this.communityLine = LISTENING;
+    this.soundPill = null;
   }
 
   create(): void {
@@ -94,11 +104,17 @@ export class MainMenu extends Scene {
    */
   private async syncWithServer(): Promise<void> {
     const init = await this.opening;
-    if (!init) return;
+    if (!this.scene.isActive()) return;
+
+    // A sky that never answered says nothing rather than listening forever.
+    if (!init) {
+      this.communityLine = null;
+      this.relayout();
+      return;
+    }
 
     this.night = init.night;
     this.synced = true;
-    if (!this.scene.isActive()) return;
 
     this.communityLine = describeTonight(
       init.community.starsTonight,
@@ -224,7 +240,9 @@ export class MainMenu extends Scene {
       wordWrap: { width: textWidth },
     }).setOrigin(0.5, 1);
     this.ui.push(footer);
-    bottom -= footer.height + 8;
+    bottom -= footer.height + 10;
+
+    bottom = this.buildSettings(w, bottom) - 10;
 
     if (this.communityLine) {
       const community = crispText(this, w / 2, bottom, this.communityLine, {
@@ -264,7 +282,7 @@ export class MainMenu extends Scene {
       y += card.height + gap;
       this.ui.push(card);
 
-      if (!this.entered) {
+      if (!this.entered && prefs.animate) {
         card.setAlpha(0).setY(centreY + 24);
         this.tweens.add({
           targets: card,
@@ -278,6 +296,46 @@ export class MainMenu extends Scene {
     });
 
     this.entered = true;
+  }
+
+  /**
+   * Sound and stillness, side by side above the footer. Returns the new bottom
+   * edge, so the cards above know how much room they still have.
+   */
+  private buildSettings(w: number, bottom: number): number {
+    const style = { height: TOGGLE_H, fontSize: 12, paddingX: 12 };
+    const y = bottom - TOGGLE_H / 2;
+
+    const sound = new Pill(this, soundLabel(), style, () => this.toggleSound());
+    sound.setActive(prefs.sound);
+    this.soundPill = sound;
+
+    const motion = new Pill(this, motionLabel(), style, () => this.toggleMotion());
+    motion.setActive(prefs.animate);
+
+    const gap = 10;
+    const rowW = sound.width + gap + motion.width;
+    sound.setPosition(w / 2 - rowW / 2 + sound.width / 2, y);
+    motion.setPosition(w / 2 + rowW / 2 - motion.width / 2, y);
+
+    this.ui.push(sound.container, motion.container);
+    return bottom - TOGGLE_H;
+  }
+
+  /** The label changes in place: a whole re-layout for one word would flicker. */
+  private toggleSound(): void {
+    setSound(!prefs.sound);
+    this.soundPill?.setLabel(soundLabel()).setActive(prefs.sound);
+  }
+
+  /**
+   * Stillness has to be chosen before the sky is built — the twinkles and the
+   * shooting stars are looping tweens started in `NightSky`'s constructor — so
+   * the menu rebuilds itself around the new answer.
+   */
+  private toggleMotion(): void {
+    prefs.set({ reducedMotion: !prefs.reducedMotion });
+    this.scene.restart();
   }
 
   private buildCards(
@@ -310,7 +368,8 @@ export class MainMenu extends Scene {
     // Right-hand column: three dots, and a chevron when there is room for one.
     const dotStep = 15;
     const dotRight = w / 2 - padX;
-    const dotsLeft = dotRight - dotStep * 2 - 5;
+    const firstDot = dotRight - dotStep * 2;
+    const dotsLeft = firstDot - 5;
     const chevronX = dotsLeft - 18;
     const textRight = showChevron ? chevronX - 14 : dotsLeft - 12;
     const textLeft = -w / 2 + padX;
@@ -347,10 +406,11 @@ export class MainMenu extends Scene {
     };
     paint(0x1b2149, 0.9, 0.35);
 
+    // Filled from the left, so Easy lights one dot and Hard lights three.
     const dots: GameObjects.Arc[] = [];
     for (let i = 0; i < 3; i++) {
       const filled = i < d.dots;
-      const dot = this.add.circle(dotRight - i * dotStep, 0, 5, d.color, filled ? 1 : 0.22);
+      const dot = this.add.circle(firstDot + i * dotStep, 0, 5, d.color, filled ? 1 : 0.22);
       if (!filled) dot.setStrokeStyle(1, d.color, 0.4);
       dots.push(dot);
     }
@@ -373,11 +433,11 @@ export class MainMenu extends Scene {
 
     const press = (): void => {
       paint(0x252c5c, 0.96, 0.7);
-      this.tweens.add({ targets: container, scale: 0.97, duration: 90, ease: 'Sine.out' });
+      if (prefs.animate) this.tweens.add({ targets: container, scale: 0.97, duration: 90, ease: 'Sine.out' });
     };
     const release = (): void => {
       paint(0x1b2149, 0.9, 0.35);
-      this.tweens.add({ targets: container, scale: 1, duration: 120, ease: 'Sine.out' });
+      if (prefs.animate) this.tweens.add({ targets: container, scale: 1, duration: 120, ease: 'Sine.out' });
     };
 
     container.on('pointerover', () => paint(0x232a58, 0.95, 0.6));
@@ -399,6 +459,14 @@ function delay(ms: number): Promise<null> {
 
 function stackHeight(cards: GameObjects.Container[], gap: number): number {
   return cards.reduce((sum, c) => sum + c.height, 0) + gap * (cards.length - 1);
+}
+
+function soundLabel(): string {
+  return prefs.sound ? '🔊  Sound' : '🔇  Muted';
+}
+
+function motionLabel(): string {
+  return prefs.animate ? '✨  Motion' : '🌙  Stillness';
 }
 
 /** Convert a 0xRRGGBB number to a "#rrggbb" CSS string for Text colors. */
