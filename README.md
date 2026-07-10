@@ -1,30 +1,65 @@
-## Devvit Phaser Starter
+# TaaraNight
 
-A starter to build web applications on Reddit's developer platform
+One night. One constellation. One story.
 
-- [Devvit](https://developers.reddit.com/): A way to build and deploy immersive games on Reddit
-- [Vite](https://vite.dev/): For compiling the webView
-- [Phaser](https://phaser.io/): 2D game engine
-- [Hono](https://hono.dev/): For backend logic
-- [TypeScript](https://www.typescriptlang.org/): For type safety
+TaaraNight is a daily shared constellation game built for Reddit's Games with a Hook Hackathon. Every evening, the subreddit gets one sky. Players connect real stars, avoid Glitch decoys, reveal the night's constellation, and unlock a quiet bedtime myth. The result is spoiler-safe and shareable, so the community can compare the night without ruining the reveal.
 
-## Getting Started
+## Why It Fits Reddit
 
-> Make sure you have Node 22 downloaded on your machine before running!
+- **One shared daily post:** everyone plays the same sky for the night.
+- **Spoiler-safe sharing:** share cards reveal effort, mood, and Jwala streak without naming or drawing the constellation.
+- **Community progress:** the menu and results show a shared star milestone for the night.
+- **Retention loop:** Jwala streaks, My Sky collection, and nightly unlocks give players a reason to return.
+- **Cozy by default, competitive by choice:** Easy is a guided first sky; Hard adds Glitches and a timer for leaderboard players.
 
-1. Run `npm create devvit@latest --template=phaser`
-2. Go through the installation wizard. You will need to create a Reddit account and connect it to Reddit developers
-3. Copy the command on the success page into your terminal
+## How To Play
 
-## Commands
+1. Open the nightly TaaraNight post.
+2. Choose **Easy** for the intended first run.
+3. Trace between real stars to connect the constellation.
+4. Use Whispers on Medium/Hard if you need a hint.
+5. Reveal the constellation, read the story, then share a spoiler-safe card.
 
-- `npm run dev`: Starts a development server where you can develop your application live on Reddit.
-- `npm run build`: Builds your client and server projects
-- `npm run deploy`: Uploads a new version of your app
-- `npm run launch`: Publishes your app for review
-- `npm run login`: Logs your CLI into Reddit
-- `npm run type-check`: Type checks, lints, and prettifies your app
+## Judging Highlights
 
-## Credits
+- **Hook:** a Wordle-like daily ritual, but tactile and visual: connect stars, reveal a myth.
+- **Delightful UX:** procedural sky, ghost-trace tutorial, hologram reveal, soundscape, read-aloud support, and reduced-motion Stillness.
+- **Polish:** responsive Phaser UI, custom vector icons, high-DPI mobile rendering, and a single design token system.
+- **Reddity:** nightly post, user-attributed share comments/posts, community star milestones, soft leaderboards, and streaks.
+- **Phaser Innovation:** custom starfield rendering, one-stroke tracing, deterministic puzzle generation, and a pannable/zoomable My Sky chart.
 
-Thanks to the Phaser team for [providing a great template](https://github.com/phaserjs/template-vite-ts)!
+## Tech Stack
+
+- Reddit Devvit web app
+- Phaser 4
+- TypeScript
+- Hono server routes
+- Devvit Redis for results, streaks, leaderboards, and post-night mapping
+- Vite build pipeline
+
+## Local Development
+
+Use Node `22.12+`. This repo was verified locally with Node `22.19.0`.
+
+```bash
+npm install
+npm run type-check
+npm run lint
+npm run test
+npm run build
+```
+
+Run a Reddit playtest:
+
+```bash
+npm run login
+npm run dev
+```
+
+The app is configured for `r/taara_connect_dev` during development. The submission community is intended to be `r/TaaraNight`.
+
+## Data And Attribution
+
+Constellation stars use real J2000 positions and designations. Star names are based on the IAU Catalog of Star Names where available, with HYG Database v4.1 fallback data. HYG Database is CC-BY-SA; see <https://github.com/astronexus/HYG-Database>.
+
+All constellation stories, UI art, icons, sounds, and reveal effects are original/procedural for this project.

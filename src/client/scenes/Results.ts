@@ -28,6 +28,7 @@ import type {
 } from '../../shared/api';
 import type { Difficulty } from '../../shared/constellations';
 import { EMPTY_JWALA, type JwalaState } from '../../shared/jwala';
+import { communityMilestone } from '../../shared/community';
 import { millisUntilNextNight } from '../../shared/nightSeed';
 import { fetchInit, fetchLeaderboards, fetchMySky, postShare, postSharePost } from '../api';
 import { NightSky } from '../ui/NightSky';
@@ -588,11 +589,10 @@ export class Results extends Scene {
     y += space.lg;
 
     if (community) {
-      const stars =
-        community.starsTonight > 0
-          ? `${community.starsTonight.toLocaleString()} stars lit tonight`
-          : 'You lit the first stars tonight';
-      y += this.panelText(y, stars, typeScale.lead, ink.bright, { family: font.serif, wrap }).height;
+      y += this.panelText(y, communityMilestone(community), typeScale.lead, ink.bright, {
+        family: font.serif,
+        wrap,
+      }).height;
 
       const by = `by ${plural(community.playersTonight, 'stargazer')}`;
       y += space.xs + this.panelText(y, by, typeScale.caption, ink.faint).height;

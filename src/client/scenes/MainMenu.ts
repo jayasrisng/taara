@@ -4,6 +4,7 @@ import { showToast } from '@devvit/web/client';
 import type { InitResponse } from '../../shared/api';
 import type { Difficulty } from '../../shared/constellations';
 import { nightNumberAt } from '../../shared/nightSeed';
+import { communityMilestone } from '../../shared/community';
 import { setSound } from '../audio/ambience';
 import { NightSky } from '../ui/NightSky';
 import { Onboarding } from '../ui/Onboarding';
@@ -38,7 +39,7 @@ interface DiffDef {
 }
 
 const DIFFICULTIES: DiffDef[] = [
-  { label: 'Easy', value: 'easy', blurb: 'The outline is shown · no Glitches', color: difficultyColor.easy, dots: 1 },
+  { label: 'Easy', value: 'easy', blurb: 'Start here · a guided first sky', color: difficultyColor.easy, dots: 1 },
   {
     label: 'Medium',
     value: 'medium',
@@ -160,11 +161,7 @@ export class MainMenu extends Scene {
     this.night = init.night;
     this.synced = true;
 
-    this.communityLine = describeTonight(
-      init.community.starsTonight,
-      init.jwala.current,
-      this.isArchive()
-    );
+    this.communityLine = describeTonight(init.community, init.jwala.current, this.isArchive());
     this.relayout();
   }
 
@@ -530,13 +527,8 @@ function motionIcon(): IconName {
 }
 
 /** The soft community line under the difficulty cards. Never shames an empty sky. */
-function describeTonight(starsTonight: number, jwala: number, archive: boolean): string {
-  const when = archive ? 'that night' : 'tonight';
-  const stars =
-    starsTonight > 0
-      ? `${starsTonight.toLocaleString()} stars lit ${when}`
-      : `No stars lit ${when} — yours could be first`;
-
+function describeTonight(community: InitResponse['community'], jwala: number, archive: boolean): string {
+  const stars = communityMilestone(community, archive);
   // No icon here: this is one wrapped, centred line of prose, and a Graphics
   // cannot flow inside a `Text`. "Jwala" is the streak's name — it needs no glyph.
   return jwala > 0 ? `${stars}  ·  Jwala ${jwala}` : stars;
