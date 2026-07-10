@@ -1,7 +1,7 @@
 /**
  * NightSky — a reusable, cozy animated backdrop.
  *
- * A vertical gradient, a hazy moon, a field of softly twinkling stars, and the
+ * A vertical gradient, a moon, a field of softly twinkling stars, and the
  * occasional slow shooting star. Shared by the menu and the play scene so the
  * whole game feels like one crafted night.
  *
@@ -12,13 +12,30 @@
 import { Scene, GameObjects } from 'phaser';
 import { mulberry32 } from '../../shared/rng';
 import { texScale } from './display';
-import type { Viewport } from './layout';
+import type { Viewport } from './frame';
 import { duration, ease, motion } from './motion';
 import { prefs } from './prefs';
 import { color } from './theme';
 import { TEX, ensureTextures } from './textures';
 
 const VIGNETTE_ALPHA = 0.38;
+
+/**
+ * The moon: a disc with an edge, and a corona that stops.
+ *
+ * It used to be the soft radial texture drawn twice — once at 0.85 for the body
+ * and once at 2.6 and 22% for the halo — which on a phone is a 400px lilac
+ * cloud in the corner with no edge anywhere in it. That is the one shape in the
+ * game that looked generated rather than drawn.
+ *
+ * Now the body is a vector circle (crisp at any DPR, and the only hard edge the
+ * sky has) and the corona is the same texture pulled in tight and taken down to
+ * a tenth, so it reads as light *coming off* the moon rather than as a lamp
+ * behind the screen.
+ */
+const MOON_RADIUS = 22;
+const CORONA_SCALE = 1.1;
+const CORONA_ALPHA = 0.16;
 
 interface BgStar {
   nx: number; // normalized 0–1 across the screen
@@ -31,7 +48,7 @@ export class NightSky {
   private gfx: GameObjects.Graphics;
   private vignette: GameObjects.Graphics;
   private stars: BgStar[] = [];
-  private moon: GameObjects.Image;
+  private moon: GameObjects.Arc;
   private moonHalo: GameObjects.Image;
   private rng: () => number;
   private view: Viewport = { w: 0, h: 0 };
@@ -45,10 +62,10 @@ export class NightSky {
 
     this.moonHalo = scene.add
       .image(0, 0, TEX.moon)
-      .setAlpha(0.22)
-      .setScale(texScale(2.6))
+      .setAlpha(CORONA_ALPHA)
+      .setScale(texScale(CORONA_SCALE))
       .setTint(color.starlight);
-    this.moon = scene.add.image(0, 0, TEX.moon).setScale(texScale(0.85)).setTint(color.moon);
+    this.moon = scene.add.circle(0, 0, MOON_RADIUS, color.moon);
 
     const count = 90;
     for (let i = 0; i < count; i++) {

@@ -173,6 +173,16 @@ export const space: Scale<'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'xxl'> = {
   xxl: 32,
 };
 
+/**
+ * The one border weight in the game, in CSS px.
+ *
+ * A pill, a difficulty card and a story card are all the same idea at three
+ * sizes, and a card that outlines itself twice as heavily as a pill does not
+ * read as more important — only as more drawn. Line-work (threads, outlines,
+ * the dome's parallels) is not chrome and sets its own weight.
+ */
+export const hairline = 1;
+
 export const radius: Scale<'card' | 'modal'> = {
   /** A card sitting in the sky. */
   card: 18,
@@ -215,8 +225,15 @@ export const alpha: Scale<
   scrim: 0.72,
 };
 
-/** Blur radii for `Text.setShadow` — the only glow the type is allowed. */
+/**
+ * Blur radii for `Text.setShadow` — the only glow the type is allowed.
+ *
+ * A `Text` shadow has no alpha of its own: the blur radius is the *whole*
+ * control, and past about a third of the cap height the halo stops reading as
+ * light on the letter and starts reading as fog behind it. Both steps were
+ * pulled in for that reason. Glow is a rim, never an atmosphere.
+ */
 export const glow: Scale<'soft' | 'strong'> = {
-  soft: 14,
-  strong: 18,
+  soft: 10,
+  strong: 14,
 };

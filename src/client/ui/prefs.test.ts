@@ -15,7 +15,7 @@ function hostileStorage(): PrefStorage {
 
 describe('defaultPrefs', () => {
   it('starts with sound on and the hints unseen', () => {
-    expect(defaultPrefs(false)).toEqual({ sound: true, reducedMotion: false, onboarded: false });
+    expect(defaultPrefs(false)).toEqual({ sound: true, reducedMotion: false, onboarded: false, starNames: false });
   });
 
   it('takes stillness from the operating system', () => {

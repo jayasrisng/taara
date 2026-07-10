@@ -6,25 +6,22 @@
  * its true place on the celestial sphere, so My Sky can be one continuous dome
  * rather than a grid of thumbnails.
  *
- * **Stereographic, about the north celestial pole.** Our stars run from Polaris
- * (+89°) to Shaula (−43°), so no tangent plane reaches them all — a gnomonic
- * projection diverges before it gets halfway. Stereographic is conformal: it
- * preserves angles, so a constellation still *looks* like itself anywhere on the
- * dome. That is the whole point of the real coordinates we went and fetched.
- * Southern shapes are drawn larger than northern ones, which is exactly what a
- * paper planisphere does and what the sky honestly requires.
+ * **Equirectangular (plate carrée), north up.** The chart every atlas page
+ * uses: right ascension runs along x, declination along y, so every
+ * constellation on the map looks exactly like it does in its own puzzle box and
+ * on every reference chart — no rotation, no mirror. The price is the one all
+ * cylindrical charts pay: figures near the celestial poles stretch sideways.
+ * With all 88 constellations aboard (σ Octantis sits 1° from the south pole)
+ * this is the projection that keeps each shape *recognisable*, which is the
+ * dome's whole job.
  *
- * **North is inward, not up.** On a polar map "north" points at the pole, so a
- * constellation is rotated by its own right ascension — Orion stands upright
- * near the bottom, Cassiopeia lies on its side at the right. That is not a bug;
- * it is what the turning sky looks like from underneath.
+ * **North is up. East is left**, as in the puzzle: increasing declination moves
+ * a star up the screen, increasing right ascension moves it left. A
+ * constellation that straddles 0h (Pisces, Pegasus) is unwrapped around its own
+ * mean, so it never tears across the chart's seam.
  *
- * **East is left**, as in the puzzle: at 6h of right ascension, increasing
- * declination moves a star up the screen and increasing right ascension moves it
- * left. Everything here is a pure function of the catalogue coordinates.
- *
- * Map space is the unit disc: the pole sits at the origin, and the rim — the
- * −45° parallel, just south of the deepest star we draw — sits at radius 1.
+ * Map space: 1 unit = 90° of declination. y runs −1 (north pole) to +1 (south
+ * pole); x runs 0 (0h) to −4 (24h), east to the left.
  */
 
 import type { Connection, Constellation } from './constellations';
@@ -35,11 +32,11 @@ import { hashSeed, mulberry32 } from './rng';
 const DEG = Math.PI / 180;
 const HOURS_TO_DEG = 15;
 
-/** The southernmost declination the dome reaches. Shaula, at −43°, is the deepest star we draw. */
-export const SKY_EDGE_DEC = -45;
+/** The southernmost declination the chart reaches: the south celestial pole itself. */
+export const SKY_EDGE_DEC = -90;
 
-/** The rim's stereographic radius, which normalises the dome to a unit disc. */
-const EDGE_RADIUS = Math.tan(((90 - SKY_EDGE_DEC) / 2) * DEG);
+/** Map units per degree: 90° of declination spans one unit. */
+const UNITS_PER_DEG = 1 / 90;
 
 /** A point on the dome. The pole is (0, 0); the rim is at radius 1. y grows south on screen. */
 export interface MapPoint {
@@ -52,16 +49,19 @@ function round4(value: number): number {
   return Math.round(value * 1e4) / 1e4;
 }
 
-/** How far from the pole a parallel of declination falls, in map units. */
-export function radiusForDec(dec: number): number {
-  return Math.tan(((90 - dec) / 2) * DEG) / EDGE_RADIUS;
+/** Where a parallel of declination sits on the chart, in map units of y. */
+export function yForDec(dec: number): number {
+  return -dec * UNITS_PER_DEG;
 }
 
-/** Place one catalogue coordinate on the dome. */
+/** Where an hour circle of right ascension sits on the chart, in map units of x. */
+export function xForRa(ra: number): number {
+  return -ra * HOURS_TO_DEG * UNITS_PER_DEG;
+}
+
+/** Place one catalogue coordinate on the chart. North up, east left. */
 export function projectSky({ ra, dec }: SkyCoord): MapPoint {
-  const radius = radiusForDec(dec);
-  const angle = ra * HOURS_TO_DEG * DEG;
-  return { x: round4(radius * Math.cos(angle)), y: round4(radius * Math.sin(angle)) };
+  return { x: round4(xForRa(ra)), y: round4(yForDec(dec)) };
 }
 
 /** One constellation, laid down on the dome among all the others. */
@@ -70,6 +70,8 @@ export interface SkyFigure {
   name: string;
   /** Its stars, in the order `connections` indexes them. */
   points: MapPoint[];
+  /** Each star's designation, aligned with `points`. */
+  starNames: string[];
   connections: readonly Connection[];
   /** The mean of its stars — where a label hangs and where the view centres. */
   centre: MapPoint;
@@ -78,7 +80,23 @@ export interface SkyFigure {
 }
 
 function toFigure(constellation: Constellation): SkyFigure {
-  const points = constellation.stars.map(projectSky);
+  // Circular mean of the figure's right ascensions, so a figure that straddles
+  // 0h (Pisces, Pegasus) is drawn whole rather than torn across the seam.
+  let sx = 0;
+  let sy = 0;
+  for (const star of constellation.stars) {
+    const angle = star.ra * HOURS_TO_DEG * DEG;
+    sx += Math.cos(angle);
+    sy += Math.sin(angle);
+  }
+  let meanRa = Math.atan2(sy, sx) / DEG / HOURS_TO_DEG;
+  if (meanRa < 0) meanRa += 24;
+  const points = constellation.stars.map((star) => {
+    let ra = star.ra;
+    if (ra - meanRa > 12) ra -= 24;
+    if (meanRa - ra > 12) ra += 24;
+    return projectSky({ ra, dec: star.dec });
+  });
 
   let sumX = 0;
   let sumY = 0;
@@ -93,6 +111,7 @@ function toFigure(constellation: Constellation): SkyFigure {
     id: constellation.id,
     name: constellation.name,
     points,
+    starNames: constellation.stars.map((star) => star.star),
     connections: constellation.connections,
     centre,
     radius: round4(radius),
@@ -184,23 +203,21 @@ const FIELD_MIN_GAP = 0.014;
 const FIELD_ATTEMPTS = 16;
 
 /**
- * Scatter anonymous stars across the dome, evenly over the sphere rather than
- * evenly over the disc — otherwise the rim, which is stretched, would look bare.
- * Seeded, so everyone's sky has the same dust in the same places.
+ * Scatter anonymous stars across the chart, evenly over the *chart* rather than
+ * the sphere — a paper chart's dust fills its page. Seeded, so everyone's sky
+ * has the same dust in the same places.
  */
 export function fieldStars(count: number, seed: number): FieldStar[] {
   const rng = mulberry32(hashSeed(count, seed));
   const real = SKY_FIGURES.flatMap((figure) => figure.points);
 
-  // Uniform in sin(dec) is uniform on the sphere.
-  const sinMin = Math.sin(SKY_EDGE_DEC * DEG);
   const stars: FieldStar[] = [];
 
   for (let i = 0; i < count; i++) {
     let point: MapPoint = { x: 0, y: 0 };
 
     for (let attempt = 0; attempt < FIELD_ATTEMPTS; attempt++) {
-      const dec = Math.asin(sinMin + rng() * (1 - sinMin)) / DEG;
+      const dec = -90 + rng() * 180;
       point = projectSky({ ra: rng() * 24, dec });
       if (real.every((star) => Math.hypot(point.x - star.x, point.y - star.y) >= FIELD_MIN_GAP)) break;
     }

@@ -6,21 +6,14 @@
  * "shorter than 560" only mean something in CSS px. `onLayout` reconciles the
  * two: it zooms the main camera by `DPR` and hands the scene a viewport it can
  * lay out against directly.
+ *
+ * What a scene then *does* with that viewport is `ui/frame.ts`'s business.
  */
 
 import * as Phaser from 'phaser';
 import type { Scene } from 'phaser';
 import { DPR } from './display';
-
-/** The drawable area, in CSS pixels. Scene coordinates live in this space. */
-export interface Viewport {
-  w: number;
-  h: number;
-}
-
-export function clamp(min: number, value: number, max: number): number {
-  return Math.max(min, Math.min(value, max));
-}
+import type { Viewport } from './frame';
 
 /** The canvas size in CSS pixels. */
 export function viewport(scene: Scene): Viewport {

@@ -61,6 +61,11 @@ export function createFakeRedis(): RedisLike & { dump(): Record<string, unknown>
       return added;
     },
 
+    async zScore(key: string, member: string): Promise<number | undefined> {
+      const set = zsets.get(key);
+      return set?.get(member);
+    },
+
     async zAdd(key: string, ...members: ZEntry[]): Promise<number> {
       const set = zsets.get(key) ?? new Map<string, number>();
       zsets.set(key, set);

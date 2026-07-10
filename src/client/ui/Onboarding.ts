@@ -1,9 +1,10 @@
 /**
- * Three sentences, once in a lifetime.
+ * Three sentences: once unasked, and any time after that on request.
  *
  * A first-time player opens the sky and sees a field of stars with no obvious
  * verb. This card supplies the verb, promises that mistakes are free, and names
- * the reward — then gets out of the way and never returns.
+ * the reward — then gets out of the way. `Play` raises it once, unasked; the
+ * menu's `?` raises the same card whenever anyone wants it back.
  *
  * Every hint is true on every difficulty. Whispers and Glitches are deliberately
  * not mentioned: Easy has neither, and a hint that describes something the
@@ -12,27 +13,32 @@
 
 import { Scene, GameObjects } from 'phaser';
 import { crispText } from './display';
-import { clamp, type Viewport } from './layout';
+import { gutter, type Viewport } from './frame';
+import { drawIcon, iconSize, type IconName } from './icons';
 import { duration, ease, tween } from './motion';
 import { Pill } from './Pill';
 import { prefs } from './prefs';
-import { alpha, color, control, font, ink, radius, space, typeScale } from './theme';
+import { alpha, color, control, font, hairline, ink, radius, space, typeScale } from './theme';
 
-/**
- * Emoji are drawn by the platform, and a glyph it does not have becomes a white
- * box on the card. These three are the ones the game already relies on
- * elsewhere, so they are the ones we know render.
- */
-const HINTS = [
-  { icon: '☝️', text: 'Drag from one star to another — or tap one, then the next.' },
-  { icon: '✨', text: 'A wrong thread simply fades. Nothing is lost; take your time.' },
-  { icon: '🌙', text: 'Complete the shape, and tonight’s story wakes.' },
+/** The verb, the forgiveness, the reward — each with the icon that means it. */
+const HINTS: { icon: IconName; text: string }[] = [
+  { icon: 'thread', text: 'Drag from one star to another — or tap one, then the next.' },
+  { icon: 'sparkle', text: 'A wrong thread simply fades. Nothing is lost; take your time.' },
+  { icon: 'moon', text: 'Complete the shape, and tonight’s story wakes.' },
 ];
 
 const TITLE = 'Before you begin';
-const BUTTON = 'Open the sky';
+
+/** What the card's button says when it is about to hand over a puzzle. */
+export const OPEN_THE_SKY = 'Open the sky';
 
 const DEPTH = 60;
+
+/** Below this width the type tightens, as everywhere else in the game. */
+const NARROW_W = 380;
+
+/** The gutter each hint's icon sits in, so all three sentences share a left edge. */
+const BULLET_COLUMN = space.xxl;
 
 /** True the first time anyone plays on this device. */
 export function needsOnboarding(): boolean {
@@ -40,18 +46,24 @@ export function needsOnboarding(): boolean {
 }
 
 /**
- * A modal card over the play scene. `onClose` runs once, after the card has
- * gone; the puzzle underneath is untouched and waiting.
+ * A modal card over whatever raised it. `onClose` runs once, after the card has
+ * gone; the scene underneath is untouched and waiting.
+ *
+ * `buttonLabel` is the only thing that changes between the two callers: from
+ * `Play` the button opens the puzzle behind the card, from the menu it just
+ * puts the card away.
  */
 export class Onboarding {
   private scene: Scene;
   private layer: GameObjects.Container | null = null;
   private onClose: () => void;
+  private buttonLabel: string;
   private closing = false;
 
-  constructor(scene: Scene, onClose: () => void) {
+  constructor(scene: Scene, onClose: () => void, buttonLabel: string = OPEN_THE_SKY) {
     this.scene = scene;
     this.onClose = onClose;
+    this.buttonLabel = buttonLabel;
   }
 
   /** Build (or rebuild, on resize) the card at this size. */
@@ -62,10 +74,10 @@ export class Onboarding {
     this.layer?.destroy();
 
     const { w, h } = view;
-    const sidePad = clamp(space.md, w * 0.05, space.xxl);
-    const cardW = Math.min(w - sidePad * 2, 460);
-    const padX = space.xl - space.xs;
-    const wrap = cardW - padX * 2 - 34;
+    const narrow = w < NARROW_W;
+    const cardW = Math.min(w - gutter(view) * 2, 460);
+    const padX = space.xl;
+    const wrap = cardW - padX * 2 - BULLET_COLUMN;
 
     // Purely a veil. Nothing here is interactive: a full-screen hit area — on the
     // scrim or on the container around it — wins the pointer against the button
@@ -77,16 +89,18 @@ export class Onboarding {
 
     const title = crispText(this.scene, 0, 0, TITLE, {
       fontFamily: font.serif,
-      fontSize: `${w < 380 ? typeScale.title : typeScale.heading}px`,
+      fontSize: `${narrow ? typeScale.title : typeScale.heading}px`,
       color: ink.accent,
       fontStyle: 'italic',
     }).setOrigin(0.5, 0);
 
+    const bodySize = narrow ? typeScale.caption : typeScale.body;
+
     const rows = HINTS.map(({ icon, text }) => {
-      const bullet = crispText(this.scene, 0, 0, icon, { fontSize: `${typeScale.lead}px` }).setOrigin(0, 0);
+      const bullet = drawIcon(this.scene, icon, iconSize.hint);
       const body = crispText(this.scene, 0, 0, text, {
         fontFamily: font.sans,
-        fontSize: `${w < 380 ? typeScale.caption : typeScale.body}px`,
+        fontSize: `${bodySize}px`,
         color: ink.body,
         lineSpacing: space.xs,
         wordWrap: { width: wrap },
@@ -94,17 +108,19 @@ export class Onboarding {
       return { bullet, body };
     });
 
-    const button = new Pill(this.scene, BUTTON, { height: control.lg, minWidth: 200 }, () => this.close());
+    const button = new Pill(this.scene, this.buttonLabel, { height: control.lg, minWidth: 200 }, () =>
+      this.close()
+    );
 
     /* Measure the flow, then place it around the card's centre. */
 
     const padTop = space.xl;
-    const titleGap = space.xl - space.xs;
+    const titleGap = space.xl;
     const rowGap = space.lg;
     const buttonGap = space.xl;
-    const padBottom = space.xl - space.xs;
+    const padBottom = space.xl;
 
-    const rowHeights = rows.map(({ bullet, body }) => Math.max(bullet.height, body.height));
+    const rowHeights = rows.map(({ body }) => Math.max(iconSize.hint, body.height));
     const cardH =
       padTop +
       title.height +
@@ -121,9 +137,11 @@ export class Onboarding {
     title.setY(y);
     y += title.height + titleGap;
 
-    const textLeft = -cardW / 2 + padX + 30;
+    const textLeft = -cardW / 2 + padX + BULLET_COLUMN;
     rows.forEach(({ bullet, body }, i) => {
-      bullet.setPosition(-cardW / 2 + padX, y + 1);
+      // The icon draws from its centre, so it is hung on the middle of the
+      // sentence's *first* line — not on the middle of a three-line paragraph.
+      bullet.setPosition(-cardW / 2 + padX + iconSize.hint / 2, y + bodySize * 0.62);
       body.setPosition(textLeft, y);
       y += rowHeights[i]! + rowGap;
     });
@@ -134,7 +152,7 @@ export class Onboarding {
     const bg = this.scene.add.graphics();
     bg.fillStyle(color.card, alpha.card);
     bg.fillRoundedRect(-cardW / 2, top, cardW, cardH, radius.modal);
-    bg.lineStyle(1.5, color.accentGlow, alpha.border);
+    bg.lineStyle(hairline, color.accentGlow, alpha.border);
     bg.strokeRoundedRect(-cardW / 2, top, cardW, cardH, radius.modal);
 
     const contents: GameObjects.GameObject[] = [scrim, bg, title, button.container];

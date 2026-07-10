@@ -21,6 +21,7 @@ import type {
   CompleteResponse,
   InitResponse,
   LeaderboardEntry,
+  NightBoardEntry,
   LeaderboardsResponse,
   MySkyResponse,
   NightResult,
@@ -28,22 +29,27 @@ import type {
 import type { Difficulty } from '../../shared/constellations';
 import { EMPTY_JWALA, type JwalaState } from '../../shared/jwala';
 import { millisUntilNextNight } from '../../shared/nightSeed';
-import { fetchInit, fetchLeaderboards, fetchMySky, postShare } from '../api';
+import { fetchInit, fetchLeaderboards, fetchMySky, postShare, postSharePost } from '../api';
 import { NightSky } from '../ui/NightSky';
 import { untilNextSky } from '../ui/countdown';
 import { crispText } from '../ui/display';
-import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { clamp, contentWidth, gutter, margin, rhythm, type Viewport } from '../ui/frame';
+import { onLayout } from '../ui/layout';
 import { crossFade, duration, enter, leaveTo } from '../ui/motion';
+import { drawIcon, iconSize } from '../ui/icons';
 import { mmss, plural, summariseNight } from '../ui/nightSummary';
 import { Pill } from '../ui/Pill';
 import { pressable, tapArea } from '../ui/pressable';
 import { ScrollPanel } from '../ui/ScrollPanel';
-import { color, control, font, glow, hex, ink, space, typeScale } from '../ui/theme';
+import { color, control, font, glow, hairline, hex, ink, space, typeScale } from '../ui/theme';
 import type { MySkyData } from './MySky';
 
-const SHARE_LABEL = '🌙  Share tonight';
+const SHARE_LABEL = 'Share tonight';
+const SHARED_LABEL = 'Shared';
+const SHARE_POST_LABEL = 'Share as post';
+const SHARED_POST_LABEL = 'Posted';
 const SIGN_IN_LABEL = 'Sign in to share';
-const MY_SKY_LABEL = '✨  Open My Sky';
+const MY_SKY_LABEL = 'Open My Sky';
 
 const TABS = [
   { id: 'tonight', label: 'Tonight' },
@@ -105,6 +111,9 @@ export class Results extends Scene {
   private sharePill: Pill | null = null;
   private sharing = false;
   private shared = false;
+  private sharePostPill: Pill | null = null;
+  private sharingPost = false;
+  private sharedPost = false;
 
   /** Set for the duration of a panel fill, so `panelText` knows where the middle is. */
   private panelWidth = 0;
@@ -232,14 +241,39 @@ export class Results extends Scene {
 
     if (!outcome.ok) {
       showToast(outcome.message);
-      this.sharePill?.setLabel(SHARE_LABEL).setEnabled(true);
+      this.sharePill?.setIcon('moon').setLabel(SHARE_LABEL).setEnabled(true);
       return;
     }
 
     this.shared = true;
-    this.sharePill?.setLabel('✓ Shared').setEnabled(false);
+    this.sharePill?.setIcon('check').setLabel(SHARED_LABEL).setEnabled(false);
     showToast(
       outcome.value.alreadyShared ? 'Your card is already on tonight’s post' : 'Your card is on tonight’s post'
+    );
+  }
+
+  /** The Wordle move: the night as its own post, once. */
+  private async sharePost(): Promise<void> {
+    if (this.sharingPost || this.sharedPost) return;
+    this.sharingPost = true;
+    this.sharePostPill?.setLabel('Posting…').setEnabled(false);
+
+    const outcome = await postSharePost();
+    this.sharingPost = false;
+    if (!this.scene.isActive()) return;
+
+    if (!outcome.ok) {
+      showToast(outcome.message);
+      this.sharePostPill?.setIcon('moon').setLabel(SHARE_POST_LABEL).setEnabled(true);
+      return;
+    }
+
+    this.sharedPost = true;
+    this.sharePostPill?.setIcon('check').setLabel(SHARED_POST_LABEL).setEnabled(false);
+    showToast(
+      outcome.value.alreadyShared
+        ? 'Your night is already posted'
+        : 'Your night is posted for other stargazers'
     );
   }
 
@@ -270,14 +304,15 @@ export class Results extends Scene {
     this.countdown = null;
     this.sharePill = null;
 
-    const sidePad = clamp(space.md, w * 0.05, space.xxl);
+    const sidePad = gutter(view);
+    const step = rhythm(view);
     const narrow = w < NARROW_W;
     const dense = h < DENSE_H;
-    const contentW = w - sidePad * 2;
+    const contentW = contentWidth(view);
 
     /* ---- header, flowing down ---- */
 
-    let top = clamp(space.sm, h * 0.035, space.xxl - space.xs);
+    let top = margin(view);
 
     const title = crispText(this, w / 2, top, `TaaraNight #${this.params.night}`, {
       fontFamily: font.serif,
@@ -301,7 +336,7 @@ export class Results extends Scene {
 
     /* ---- tabs ---- */
 
-    top += clamp(space.sm, h * 0.022, space.lg);
+    top += step;
     const tabGap = space.sm;
     const tabW = (contentW - tabGap * (TABS.length - 1)) / TABS.length;
 
@@ -326,7 +361,7 @@ export class Results extends Scene {
 
     /* ---- share row, flowing up ---- */
 
-    let bottom = h - clamp(space.sm, h * 0.03, space.xl);
+    let bottom = h - margin(view);
 
     const back = crispText(this, w / 2, bottom, 'Return to the sky', {
       fontFamily: font.sans,
@@ -361,22 +396,51 @@ export class Results extends Scene {
     // A signed-out player cannot comment, so the button asks for the one thing
     // that would let them — rather than offering a share that will be refused.
     const anonymous = this.viewer() === 'anonymous';
+    const rowW = Math.min(contentW, 280);
     const share = new Pill(
       this,
-      anonymous ? SIGN_IN_LABEL : this.shared ? '✓ Shared' : SHARE_LABEL,
-      { height: control.lg, minWidth: Math.min(contentW, 280), fontSize: typeScale.body },
+      anonymous ? SIGN_IN_LABEL : this.shared ? SHARED_LABEL : SHARE_LABEL,
+      {
+        height: control.lg,
+        minWidth: anonymous ? rowW : (rowW - space.sm) / 2,
+        fontSize: anonymous ? typeScale.body : typeScale.caption,
+        // Signing in is not sharing, so it carries no moon.
+        ...(anonymous ? {} : { icon: this.shared ? ('check' as const) : ('moon' as const) }),
+      },
       () => (anonymous ? showLoginPrompt() : void this.share())
     );
-    share.setPosition(w / 2, bottom - control.lg / 2);
     share.setEnabled(anonymous || (this.viewer() === 'known' && !this.shared && !this.sharing));
     this.sharePill = share;
     this.pills.push(share);
+
+    if (anonymous) {
+      share.setPosition(w / 2, bottom - control.lg / 2);
+    } else {
+      // Two ways out into the community, side by side: the comment on tonight's
+      // post, and the standalone post other stargazers can wander in from.
+      share.setPosition(w / 2 - rowW / 2 + share.width / 2, bottom - control.lg / 2);
+      const sharePost = new Pill(
+        this,
+        this.sharedPost ? SHARED_POST_LABEL : SHARE_POST_LABEL,
+        {
+          height: control.lg,
+          minWidth: (rowW - space.sm) / 2,
+          fontSize: typeScale.caption,
+          icon: this.sharedPost ? ('check' as const) : ('moon' as const),
+        },
+        () => void this.sharePost()
+      );
+      sharePost.setPosition(w / 2 + rowW / 2 - sharePost.width / 2, bottom - control.lg / 2);
+      sharePost.setEnabled(this.viewer() === 'known' && !this.sharedPost && !this.sharingPost);
+      this.sharePostPill = sharePost;
+      this.pills.push(sharePost);
+    }
     bottom -= control.lg + space.sm;
 
     const mySky = new Pill(
       this,
       MY_SKY_LABEL,
-      { height: control.md, minWidth: Math.min(contentW, 280), fontSize: typeScale.body },
+      { height: control.md, minWidth: Math.min(contentW, 280), fontSize: typeScale.body, icon: 'sparkle' },
       () => this.openMySky()
     );
     mySky.setPosition(w / 2, bottom - control.md / 2);
@@ -385,7 +449,7 @@ export class Results extends Scene {
 
     /* ---- the panel takes what is left ---- */
 
-    const panelTop = top + clamp(space.sm, h * 0.02, space.lg);
+    const panelTop = top + step;
     const panelH = Math.max(80, bottom - panelTop);
     this.contentW = contentW;
     this.panel.setBounds(sidePad, panelTop, contentW, panelH);
@@ -460,7 +524,7 @@ export class Results extends Scene {
 
   private divider(y: number, w: number): void {
     const line = this.add.graphics();
-    line.lineStyle(1, color.line, 0.9);
+    line.lineStyle(hairline, color.line, 0.9);
     line.lineBetween(w * 0.15, y, w * 0.85, y);
     this.panel.add(line);
   }
@@ -472,13 +536,15 @@ export class Results extends Scene {
     const jwala = this.jwala();
     const community = this.server?.community;
 
-    const wrap = w - space.xl - space.xs;
+    const wrap = w - space.xxl;
     let y = space.xs;
 
-    // The flame first — it is the thing to be proud of.
-    const flame = crispText(this, w / 2, y, '🔥', { fontSize: `${typeScale.display}px` }).setOrigin(0.5, 0);
+    // The flame first — it is the thing to be proud of. `drawIcon` centres on its
+    // own origin, so it is placed at the middle of the row it occupies.
+    const flame = drawIcon(this, 'flame', iconSize.hero, color.accentDeep);
+    flame.setPosition(w / 2, y + iconSize.hero / 2);
     this.panel.add(flame);
-    y += flame.height + space.xs;
+    y += iconSize.hero + space.xs;
 
     const viewer = this.viewer();
 
@@ -560,15 +626,7 @@ export class Results extends Scene {
       return y + space.xxl;
     }
 
-    y = this.board(y, w, 'Fastest tonight', this.boards.fastest, mmss, 'No one has raced tonight');
-    y = this.board(
-      y,
-      w,
-      'Fewest Whispers',
-      this.boards.fewestWhispers,
-      (value) => plural(value, 'Whisper'),
-      'No one has finished tonight'
-    );
+    y = this.nightBoard(y, w, this.boards.tonight);
     y = this.board(
       y,
       w,
@@ -579,6 +637,55 @@ export class Results extends Scene {
     );
 
     return y + 4;
+  }
+
+  /**
+   * The one nightly board: Hard above Medium above Easy, then fewer Glitches,
+   * then less time, then fewer Whispers — the row explains itself.
+   */
+  private nightBoard(y: number, w: number, rows: NightBoardEntry[]): number {
+    const heading = this.panelText(y, 'Tonight’s stargazers', typeScale.body, ink.accent, {
+      family: font.serif,
+    });
+    let cursor = y + heading.height + space.sm;
+
+    if (rows.length === 0) {
+      cursor += this.panelText(cursor, 'No one has finished tonight', typeScale.caption, ink.faint, {
+        italic: true,
+      }).height;
+      return cursor + space.lg;
+    }
+
+    const me = this.server?.username;
+    for (const row of rows) {
+      const mine = row.username === me;
+      const fill = mine ? ink.accent : ink.muted;
+
+      const rank = crispText(this, space.xs, cursor, String(row.rank), {
+        fontFamily: font.sans,
+        fontSize: `${typeScale.micro}px`,
+        color: ink.faint,
+      }).setOrigin(0, 0);
+
+      const name = crispText(this, space.xxl, cursor, mine ? `${row.username} (you)` : row.username, {
+        fontFamily: font.sans,
+        fontSize: `${typeScale.caption}px`,
+        color: fill,
+      }).setOrigin(0, 0);
+
+      const mode = row.difficulty.charAt(0).toUpperCase() + row.difficulty.slice(1);
+      const detail = `${mode} · ${row.glitches}g · ${mmss(row.timeMs)} · ${row.whispers}w`;
+      const value = crispText(this, w - space.md, cursor, detail, {
+        fontFamily: font.sans,
+        fontSize: `${typeScale.micro}px`,
+        color: fill,
+      }).setOrigin(1, 0);
+
+      this.panel.add(rank, name, value);
+      cursor += name.height + space.sm;
+    }
+
+    return cursor + space.lg;
   }
 
   private board(
@@ -608,7 +715,7 @@ export class Results extends Scene {
         color: ink.faint,
       }).setOrigin(0, 0);
 
-      const name = crispText(this, space.xl + space.xs, cursor, mine ? `${row.username} (you)` : row.username, {
+      const name = crispText(this, space.xxl, cursor, mine ? `${row.username} (you)` : row.username, {
         fontFamily: font.sans,
         fontSize: `${typeScale.caption}px`,
         color: fill,

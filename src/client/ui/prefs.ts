@@ -24,6 +24,8 @@ export interface PrefsState {
   reducedMotion: boolean;
   /** True once the opening three hints have been read. */
   onboarded: boolean;
+  /** Label the real stars with their designations, where it cannot spoil. */
+  starNames: boolean;
 }
 
 export interface PrefStorage {
@@ -31,11 +33,11 @@ export interface PrefStorage {
   write(value: string): void;
 }
 
-const FLAGS = ['sound', 'reducedMotion', 'onboarded'] as const;
+const FLAGS = ['sound', 'reducedMotion', 'onboarded', 'starNames'] as const;
 
 /** Sound on, motion as the operating system asks, hints not yet seen. */
 export function defaultPrefs(systemReducedMotion: boolean): PrefsState {
-  return { sound: true, reducedMotion: systemReducedMotion, onboarded: false };
+  return { sound: true, reducedMotion: systemReducedMotion, onboarded: false, starNames: false };
 }
 
 /** Read whatever of a stored blob still looks like a preference. */
@@ -84,6 +86,10 @@ export class Prefs {
 
   get onboarded(): boolean {
     return this.state.onboarded;
+  }
+
+  get starNames(): boolean {
+    return this.state.starNames;
   }
 
   /** True when the scene may move things around. Fades are always allowed. */

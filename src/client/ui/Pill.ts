@@ -13,9 +13,10 @@
 
 import { Scene, GameObjects, Tweens } from 'phaser';
 import { crispText } from './display';
+import { drawIcon, iconSizeFor, paintIcon, type IconName } from './icons';
 import { crossFade, duration, tween } from './motion';
 import { pressable, tapArea } from './pressable';
-import { alpha, color, control, font, ink, space, typeScale } from './theme';
+import { alpha, color, control, font, hairline, ink, space, typeScale } from './theme';
 
 export interface PillStyle {
   height?: number;
@@ -23,7 +24,12 @@ export interface PillStyle {
   fontSize?: number;
   paddingX?: number;
   accent?: number;
+  /** A line icon before the label, sized to `fontSize`. Always the warm accent. */
+  icon?: IconName;
 }
+
+/** Between an icon and the label it introduces. */
+const ICON_GAP = space.sm;
 
 export class Pill {
   readonly container: GameObjects.Container;
@@ -31,7 +37,9 @@ export class Pill {
   private scene: Scene;
   private bg: GameObjects.Graphics;
   private label: GameObjects.Text;
-  private style: Required<PillStyle>;
+  private icon: GameObjects.Graphics | null = null;
+  private iconSize: number;
+  private style: Omit<Required<PillStyle>, 'icon'>;
 
   private w = 0;
   private active = false;
@@ -53,6 +61,7 @@ export class Pill {
       paddingX: style.paddingX ?? space.lg,
       accent: style.accent ?? color.accent,
     };
+    this.iconSize = iconSizeFor(this.style.fontSize);
 
     this.bg = scene.add.graphics();
     this.label = crispText(scene, 0, 0, label, {
@@ -62,7 +71,8 @@ export class Pill {
     }).setOrigin(0.5);
 
     this.container = scene.add.container(0, 0, [this.bg, this.label]);
-    this.resize();
+    if (style.icon) this.setIcon(style.icon);
+    else this.resize();
 
     if (onClick) this.makeInteractive(onClick);
   }
@@ -92,6 +102,37 @@ export class Pill {
   setLabel(text: string): this {
     if (this.label.text === text) return this;
     this.label.setText(text);
+    this.resize();
+    return this;
+  }
+
+  /**
+   * Widen the pill's floor. Two pills side by side whose labels change — Sound
+   * becoming Muted — must be given the same floor, or each toggle re-centres
+   * the row and nudges its neighbour under the thumb that just tapped it.
+   */
+  setMinWidth(minWidth: number): this {
+    if (this.style.minWidth === minWidth) return this;
+    this.style.minWidth = minWidth;
+    this.resize();
+    return this;
+  }
+
+  /**
+   * Show, change or drop the leading icon. `null` removes it — a Share pill that
+   * has become "Signed out" is not sharing anything, and should not say it is.
+   */
+  setIcon(name: IconName | null): this {
+    if (!name) {
+      this.icon?.destroy();
+      this.icon = null;
+    } else if (this.icon) {
+      paintIcon(this.icon, name, this.iconSize);
+    } else {
+      this.icon = drawIcon(this.scene, name, this.iconSize);
+      // Above the background it sits on, below the label it introduces.
+      this.container.addAt(this.icon, 1);
+    }
     this.resize();
     return this;
   }
@@ -177,9 +218,22 @@ export class Pill {
     );
   }
 
-  /** Re-measure around the label and rebuild the hit area to match. */
+  /**
+   * Re-measure around the contents and rebuild the hit area to match.
+   *
+   * Icon and label are laid out as one block and that block is centred, so an
+   * icon shifts the label right rather than hanging off the pill's left edge.
+   * An icon with no label (the Play HUD's sound button) takes no gap.
+   */
   private resize(): void {
-    this.w = Math.max(this.style.minWidth, this.label.width + this.style.paddingX * 2);
+    const iconW = this.icon ? this.iconSize : 0;
+    const gap = this.icon && this.label.text ? ICON_GAP : 0;
+    const contentW = iconW + gap + this.label.width;
+
+    this.w = Math.max(this.style.minWidth, contentW + this.style.paddingX * 2);
+    this.icon?.setPosition(-contentW / 2 + iconW / 2, 0);
+    this.label.setX(contentW / 2 - this.label.width / 2);
+
     this.container.setSize(this.w, this.height);
     this.paint();
 
@@ -193,7 +247,7 @@ export class Pill {
     this.bg.clear();
     this.bg.fillStyle(this.fill, alpha.fill);
     this.bg.fillRoundedRect(-this.w / 2, -height / 2, this.w, height, radius);
-    this.bg.lineStyle(1, accent, this.strokeAlpha);
+    this.bg.lineStyle(hairline, accent, this.strokeAlpha);
     this.bg.strokeRoundedRect(-this.w / 2, -height / 2, this.w, height, radius);
   }
 }

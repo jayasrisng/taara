@@ -23,14 +23,17 @@
     "redis": true,
     "reddit": {
       "scope": "user",
-      "asUser": ["SUBMIT_COMMENT"]
+      "asUser": [
+        "SUBMIT_COMMENT",
+        "SUBMIT_POST"
+      ]
     }
   },
   "menu": {
     "items": [
       {
-        "label": "Open tonight’s sky",
-        "description": "Create tonight’s TaaraNight puzzle post by hand",
+        "label": "Open tonight\u2019s sky",
+        "description": "Create tonight\u2019s TaaraNight puzzle post by hand",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/post-create"

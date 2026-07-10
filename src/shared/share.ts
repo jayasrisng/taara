@@ -35,6 +35,40 @@ function jwalaLine(jwala: JwalaState): string {
   return jwala.current > 0 ? `Jwala streak: ${plural(jwala.current, 'night')}` : 'Jwala streak: rekindling';
 }
 
+function glitchLine(glitches: number): string {
+  return glitches === 0 ? 'No Glitches touched' : `${plural(glitches, 'Glitch')} touched`;
+}
+
+function modeLine(result: NightResult): string {
+  const mode = result.difficulty.charAt(0).toUpperCase() + result.difficulty.slice(1);
+  return `Mode: ${mode}`;
+}
+
+/**
+ * The share *post* — the Wordle move: a standalone post other stargazers can
+ * find, with the numbers of the night and a way in. Same spoiler rule as the
+ * comment: night number, effort, mood — never the constellation.
+ */
+export function buildSharePost(
+  result: NightResult,
+  jwala: JwalaState,
+  gameLink: string | null
+): { title: string; text: string } {
+  const lines = [
+    `TaaraNight #${result.night} 🌙`,
+    modeLine(result),
+    glitchLine(result.glitches),
+    whisperLine(result.whispers),
+    jwalaLine(jwala),
+    `Mood: ${moodFor(result)}`,
+  ];
+  if (gameLink) lines.push('', `Reveal tonight’s sky yourself: ${gameLink}`);
+  return {
+    title: `TaaraNight #${result.night} — I revealed tonight’s sky 🌙`,
+    text: lines.join(HARD_BREAK),
+  };
+}
+
 export function buildShareText(result: NightResult, jwala: JwalaState): string {
   return [
     `TaaraNight #${result.night} 🌙`,

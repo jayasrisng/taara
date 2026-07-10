@@ -94,6 +94,8 @@ export interface NightlyPuzzle {
   constellationId: string;
   /** Source constellation name (spoiler — reveal only after completion). */
   name: string;
+  /** English meaning of the name, e.g. "The Hunter" (spoiler, as `name`). */
+  meaning: string;
   /** Bedtime story reward (spoiler — reveal only after completion). */
   story: string;
   params: DifficultyParams;
@@ -257,6 +259,7 @@ export function generatePuzzle(night: number, difficulty: Difficulty): NightlyPu
     difficulty,
     constellationId: constellation.id,
     name: constellation.name,
+    meaning: constellation.meaning,
     story: constellation.story,
     params,
     stars,

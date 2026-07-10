@@ -22,7 +22,7 @@ import {
   SKY_FIGURES,
   fieldStars,
   nearestStar,
-  radiusForDec,
+  yForDec,
   type FieldStar,
   type MapPoint,
   type SkyFigure,
@@ -30,12 +30,14 @@ import {
 import { fetchMySky } from '../api';
 import { NightSky } from '../ui/NightSky';
 import { crispText, texScale } from '../ui/display';
-import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { clamp, contentWidth, gutter, margin, type Viewport } from '../ui/frame';
+import { onLayout } from '../ui/layout';
 import { duration, ease, enter, leaveTo, motion, tween } from '../ui/motion';
 import { Pill } from '../ui/Pill';
+import { showToast } from '@devvit/web/client';
 import { prefs } from '../ui/prefs';
 import { StoryCard } from '../ui/StoryCard';
-import { color, control, font, ink, space, typeScale } from '../ui/theme';
+import { color, control, font, hairline, ink, space, typeScale } from '../ui/theme';
 import { TEX } from '../ui/textures';
 import type { ResultsData } from './Results';
 
@@ -55,12 +57,16 @@ const TAP_THRESHOLD = 12;
 const MAX_ZOOM = 8;
 /** Names crowd each other when the sky is small; they appear as you lean in. */
 const LABEL_ZOOM = 1.6;
+/** Star designations need more room than constellation names: a deeper zoom. */
+const STAR_LABEL_ZOOM = 2.6;
 
 /** Anything this far outside the viewport is not drawn at all. */
 const CULL = 48;
 
 /** How fast a flick decays, in milliseconds to 1/e of its speed. */
-const GLIDE_DECAY = 130;
+// Tuned down from 130: on the flat chart a flick was sailing whole
+// constellations off the screen before it settled.
+const GLIDE_DECAY = 70;
 /** Below this speed (map units per ms) the sky has come to rest. */
 const GLIDE_STOP = 0.00002;
 
@@ -80,6 +86,8 @@ interface FigureView {
   figure: SkyFigure;
   glows: GameObjects.Image[];
   label: GameObjects.Text | null;
+  /** Per-star designations, built only when the setting asks for them. */
+  starLabels: GameObjects.Text[];
 }
 
 export class MySky extends Scene {
@@ -115,6 +123,8 @@ export class MySky extends Scene {
   private dragging = false;
   private pinching = false;
   private pinchDistance = 0;
+  private pinchMidX = 0;
+  private pinchMidY = 0;
   private downX = 0;
   private downY = 0;
   private moved = 0;
@@ -269,6 +279,7 @@ export class MySky extends Scene {
     for (const view of this.views) {
       view.glows.forEach((glow) => glow.destroy());
       view.label?.destroy();
+      view.starLabels.forEach((label) => label.destroy());
     }
     this.views = [];
 
@@ -286,9 +297,24 @@ export class MySky extends Scene {
       }).setOrigin(0.5, 0);
       label.setAlpha(0.85);
 
+      // The stars of a gathered sky may carry their own names — a quiet
+      // education, shown only when the setting asks and the zoom gives room.
+      const starLabels = prefs.starNames
+        ? figure.starNames.map((name) =>
+            crispText(this, 0, 0, name, {
+              fontFamily: font.sans,
+              fontSize: `${typeScale.micro}px`,
+              color: ink.muted,
+            })
+              .setOrigin(0.5)
+              .setAlpha(0.8)
+          )
+        : [];
+
       this.glowLayer.add(glows);
       this.layer.add(label);
-      this.views.push({ figure, glows, label });
+      starLabels.forEach((starLabel) => this.layer.add(starLabel));
+      this.views.push({ figure, glows, label, starLabels });
     }
   }
 
@@ -352,25 +378,21 @@ export class MySky extends Scene {
   }
 
   /**
-   * Parallels of declination, centred on the pole. A ring whose band is nowhere
-   * near the viewport is skipped: at full zoom its radius is tens of thousands
-   * of pixels, and asking the renderer to stroke that circle is pointless work.
+   * Parallels of declination — on a north-up chart they are quiet horizontal
+   * lines, the graticule of every atlas page. Off-screen parallels are skipped.
    */
   private drawRings(): void {
     this.ringGfx.clear();
-    const pole = this.toScreen({ x: 0, y: 0 });
-    const reach = Math.hypot(this.view.w, this.view.h) / 2 + CULL;
-    const fromPole = Math.hypot(pole.x - this.view.w / 2, pole.y - this.view.h / 2);
 
-    const ring = (dec: number, alpha: number): void => {
-      const radius = radiusForDec(dec) * this.zoom;
-      if (Math.abs(radius - fromPole) > reach) return;
-      this.ringGfx.lineStyle(1, color.line, alpha);
-      this.ringGfx.strokeCircle(pole.x, pole.y, radius);
+    const line = (dec: number, alpha: number): void => {
+      const y = this.toScreen({ x: 0, y: yForDec(dec) }).y;
+      if (y < -CULL || y > this.view.h + CULL) return;
+      this.ringGfx.lineStyle(hairline, color.line, alpha);
+      this.ringGfx.lineBetween(0, y, this.view.w, y);
     };
 
-    for (const dec of RINGS) ring(dec, 0.5);
-    ring(-45, 0.7);
+    for (const dec of RINGS) line(dec, 0.5);
+    line(0, 0.7);
   }
 
   private drawDust(): void {
@@ -452,6 +474,29 @@ export class MySky extends Scene {
 
       const clear = y > this.hudTop && y + label.height < this.hudBottom;
       label.setVisible(showing && clear && this.onScreen({ x: centre.x, y }));
+
+      const naming = this.zoom >= this.fitZoom * STAR_LABEL_ZOOM;
+      const fc = this.toScreen(view.figure.centre);
+      const placed: { x1: number; y1: number; x2: number; y2: number }[] = [];
+      view.starLabels.forEach((starLabel, i) => {
+        const p = this.toScreen(view.figure.points[i]!);
+        const dx = p.x - fc.x;
+        const dy = p.y - fc.y;
+        const len = Math.max(1, Math.hypot(dx, dy));
+        const lx = p.x + (dx / len) * (12 + starLabel.width / 2);
+        const ly = p.y + (dy / len) * (12 + starLabel.height);
+        starLabel.setPosition(lx, ly);
+        const rect = {
+          x1: lx - starLabel.width / 2,
+          y1: ly - starLabel.height / 2,
+          x2: lx + starLabel.width / 2,
+          y2: ly + starLabel.height / 2,
+        };
+        const clear = !placed.some((q) => rect.x1 < q.x2 && rect.x2 > q.x1 && rect.y1 < q.y2 && rect.y2 > q.y1);
+        if (clear) placed.push(rect);
+        const inBand = ly > this.hudTop && ly + starLabel.height < this.hudBottom;
+        starLabel.setVisible(naming && clear && inBand && this.onScreen({ x: lx, y: ly }));
+      });
     }
   }
 
@@ -469,16 +514,14 @@ export class MySky extends Scene {
     this.ui = [];
     this.pills = [];
 
-    const sidePad = clamp(space.md, w * 0.045, space.xl + space.xs);
+    const sidePad = gutter(view);
+    const edge = margin(view);
 
     /* ---- the sky is framed before anything is drawn on top of it ---- */
 
-    // The whole sky, with a margin, is the most zoomed-out the dome ever gets.
-    const margin = space.xl + space.xs;
-    this.fitZoom = Math.min(
-      (w - margin * 2) / SKY_BOUNDS.width,
-      (h - margin * 2) / SKY_BOUNDS.height
-    );
+    // The whole sky, inside the same frame everything else respects, is the most
+    // zoomed-out the dome ever gets.
+    this.fitZoom = Math.min((w - sidePad * 2) / SKY_BOUNDS.width, (h - edge * 2) / SKY_BOUNDS.height);
 
     if (!this.framed) {
       this.framed = true;
@@ -490,7 +533,7 @@ export class MySky extends Scene {
 
     /* ---- the HUD floats over it ---- */
 
-    const rowY = space.md + control.md / 2;
+    const rowY = edge + control.md / 2;
     const back = new Pill(this, '‹ Back', { minWidth: 72 }, () => this.leave());
     back.setPosition(sidePad + back.width / 2, rowY);
     this.pills.push(back);
@@ -499,7 +542,20 @@ export class MySky extends Scene {
     whole.setPosition(w - sidePad - whole.width / 2, rowY);
     this.pills.push(whole);
 
-    const flank = Math.max(back.width, whole.width);
+    // Star names, right where the stars are: relabelling is a rebuild, since
+    // the labels only exist while the setting asks for them.
+    const names = new Pill(this, '', { minWidth: control.md, paddingX: space.sm, icon: 'star' }, () => {
+      prefs.set({ starNames: !prefs.starNames });
+      names.setActive(prefs.starNames);
+      showToast(prefs.starNames ? 'Star names on' : 'Star names off');
+      this.buildFigures();
+      this.redraw();
+    });
+    names.setActive(prefs.starNames);
+    names.setPosition(w - sidePad - whole.width - space.sm - names.width / 2, rowY);
+    this.pills.push(names);
+
+    const flank = Math.max(back.width, whole.width + space.sm + names.width);
     const title = crispText(this, w / 2, rowY, 'My Sky', {
       fontFamily: font.serif,
       fontSize: `${typeScale.title}px`,
@@ -507,7 +563,7 @@ export class MySky extends Scene {
     }).setOrigin(0.5);
     // Drops to its own row rather than running through the pills on a narrow phone.
     if (title.width > w - 2 * (sidePad + flank) - space.xl) {
-      title.setY(space.md + control.md + space.sm + title.height / 2);
+      title.setY(edge + control.md + space.sm + title.height / 2);
     }
     this.ui.push(title);
 
@@ -516,18 +572,18 @@ export class MySky extends Scene {
       fontSize: `${typeScale.caption}px`,
       color: ink.muted,
       align: 'center',
-      wordWrap: { width: w - sidePad * 2 },
+      wordWrap: { width: contentWidth(view) },
     }).setOrigin(0.5, 0);
     this.subtitle = subtitle;
     this.ui.push(subtitle);
     this.hudTop = Math.max(subtitle.y + subtitle.height, rowY + control.md / 2) + space.xs;
 
-    const hint = crispText(this, w / 2, h - clamp(space.sm, h * 0.02, space.lg), this.hintText(), {
+    const hint = crispText(this, w / 2, h - edge, this.hintText(), {
       fontFamily: font.sans,
       fontSize: `${typeScale.micro}px`,
       color: ink.faint,
       align: 'center',
-      wordWrap: { width: w - sidePad * 2 },
+      wordWrap: { width: contentWidth(view) },
     }).setOrigin(0.5, 1);
     this.hint = hint;
     this.ui.push(hint);
@@ -619,6 +675,15 @@ export class MySky extends Scene {
     // Scene-level handlers fire wherever the press landed, so a press that began
     // on a HUD pill must not also grab the sky — or drag it, or tap a star behind it.
     if (this.busy() || this.input.hitTestPointer(pointer).length > 0) return;
+
+    // The second finger arriving is the pinch starting, right now — waiting for
+    // the first move event made the gesture feel like it was being ignored.
+    const [first, second] = [this.input.pointer1, this.input.pointer2];
+    if (first.isDown && second.isDown) {
+      this.dragging = false;
+      this.pinch(first, second);
+      return;
+    }
     this.dragging = true;
     this.moved = 0;
     this.downX = this.lastX = pointer.worldX;
@@ -645,8 +710,9 @@ export class MySky extends Scene {
     this.moved += Math.hypot(dx, dy);
     this.setCentre(this.centre.x - dx / this.zoom, this.centre.y - dy / this.zoom);
 
-    // Map units per millisecond, so a flick keeps the sky moving after release.
-    this.velocity = { x: -dx / this.zoom / elapsed, y: -dy / this.zoom / elapsed };
+    // Map units per millisecond, halved: the glide should finish the gesture,
+    // not launch the sky past what the finger meant.
+    this.velocity = { x: (-dx / this.zoom / elapsed) * 0.5, y: (-dy / this.zoom / elapsed) * 0.5 };
 
     this.lastX = pointer.worldX;
     this.lastY = pointer.worldY;
@@ -654,6 +720,11 @@ export class MySky extends Scene {
     this.redraw();
   }
 
+  /**
+   * Two fingers do both jobs at once: their spread scales the sky about their
+   * midpoint, and the midpoint's own travel pans it — so a pinch that drifts
+   * (every real pinch) follows the hand instead of fighting it.
+   */
   private pinch(first: Phaser.Input.Pointer, second: Phaser.Input.Pointer): void {
     const distance = Phaser.Math.Distance.Between(
       first.worldX,
@@ -665,11 +736,21 @@ export class MySky extends Scene {
     const midY = (first.worldY + second.worldY) / 2;
 
     if (this.pinching && this.pinchDistance > 0 && distance > 0) {
-      this.zoomAt(midX, midY, distance / this.pinchDistance);
+      // One event's ratio is clamped: a mis-read frame (a finger re-landing,
+      // a webview hiccup) must nudge the sky, never yank it.
+      const factor = Math.max(0.9, Math.min(1.1, distance / this.pinchDistance));
+      this.zoomAt(midX, midY, factor);
+      this.setCentre(
+        this.centre.x - (midX - this.pinchMidX) / this.zoom,
+        this.centre.y - (midY - this.pinchMidY) / this.zoom
+      );
+      this.redraw();
     }
 
     this.pinching = true;
     this.pinchDistance = distance;
+    this.pinchMidX = midX;
+    this.pinchMidY = midY;
     this.dragging = false;
     this.velocity = { x: 0, y: 0 };
   }
@@ -697,7 +778,7 @@ export class MySky extends Scene {
 
   private onWheel(pointer: Phaser.Input.Pointer, _over: unknown, _dx: number, dy: number): void {
     if (this.busy()) return;
-    this.zoomAt(pointer.worldX, pointer.worldY, Math.exp(-dy * 0.0016));
+    this.zoomAt(pointer.worldX, pointer.worldY, Math.exp(-dy * 0.001));
   }
 
   /**
@@ -709,7 +790,7 @@ export class MySky extends Scene {
     const hit = nearestStar(SKY_FIGURES, this.toMap(x, y), TAP_RADIUS / this.zoom);
     if (!hit) return;
 
-    if (this.isLit(hit.figure)) this.openStory(hit.figure);
+    if (this.isLit(hit.figure)) this.visit(hit.figure);
     else this.flicker(this.toScreen(hit.figure.points[hit.starIndex]!));
   }
 
@@ -729,6 +810,41 @@ export class MySky extends Scene {
       duration: duration.slow,
       onComplete: () => spark.destroy(),
     });
+  }
+
+  /**
+   * Glide onto the constellation first — the clear view of its stars *is* the
+   * payoff of tapping it — and let the story rise once the sky has settled.
+   */
+  private visit(figure: SkyFigure): void {
+    if (this.card) return;
+    this.velocity = { x: 0, y: 0 };
+
+    const shortSide = Math.min(this.view.w, this.view.h);
+    const target = {
+      zoom: Math.max(this.zoom, (shortSide * 0.34) / Math.max(figure.radius, 0.02)),
+      x: figure.centre.x,
+      y: figure.centre.y,
+    };
+    const from = { zoom: this.zoom, x: this.centre.x, y: this.centre.y };
+    const settle = motion(this, {
+      targets: from,
+      ...target,
+      duration: duration.slow,
+      ease: ease.inOut,
+      onUpdate: () => {
+        this.zoom = from.zoom;
+        this.setCentre(from.x, from.y);
+        this.redraw();
+      },
+      onComplete: () => this.openStory(figure),
+    });
+    if (!settle) {
+      this.zoom = target.zoom;
+      this.setCentre(target.x, target.y);
+      this.redraw();
+      this.openStory(figure);
+    }
   }
 
   private openStory(figure: SkyFigure): void {

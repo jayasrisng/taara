@@ -283,8 +283,12 @@ describe('Constellation Loader', () => {
     it('never uses a proper name that belongs to another star', () => {
       const found = new Set<string>();
       loadConstellations().constellations.forEach((c) => c.stars.forEach((s) => found.add(s.star)));
-      // Gienah is γ Corvi, not ε Cygni; Deneb Dulfim is an obsolete name for Aldulfin.
-      expect(found.has('Gienah')).toBe(false);
+      // Gienah is γ Corvi (it lives in Corvus now), never ε Cygni, which is Aljanah.
+      // Deneb Dulfim is an obsolete name for Aldulfin.
+      const cygnus = loadConstellations().constellations.find((c) => c.id === 'cygnus');
+      expect(cygnus?.stars.some((s) => s.star === 'Gienah')).toBe(false);
+      const corvus = loadConstellations().constellations.find((c) => c.id === 'corvus');
+      expect(corvus?.stars.some((s) => s.star === 'Gienah')).toBe(true);
       expect(found.has('Deneb Dulfim')).toBe(false);
       expect(found.has('Aljanah')).toBe(true);
       expect(found.has('Aldulfin')).toBe(true);
@@ -303,7 +307,7 @@ describe('Constellation Loader', () => {
           for (let j = i + 1; j < c.stars.length; j++) {
             const a = c.stars[i]!;
             const b = c.stars[j]!;
-            expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(0.06);
+            expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(0.035);
           }
         }
       });

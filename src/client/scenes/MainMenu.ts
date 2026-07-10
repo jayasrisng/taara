@@ -1,26 +1,29 @@
-import { Scene, GameObjects, Tweens } from 'phaser';
+import { Scene, GameObjects } from 'phaser';
+import * as Phaser from 'phaser';
 import { showToast } from '@devvit/web/client';
 import type { InitResponse } from '../../shared/api';
 import type { Difficulty } from '../../shared/constellations';
 import { nightNumberAt } from '../../shared/nightSeed';
 import { setSound } from '../audio/ambience';
 import { NightSky } from '../ui/NightSky';
+import { Onboarding } from '../ui/Onboarding';
 import { crispText } from '../ui/display';
-import { clamp, onLayout, type Viewport } from '../ui/layout';
-import { crossFade, duration, enter, leave, leaveTo, motion, tween } from '../ui/motion';
+import { clamp, contentWidth, gutter, margin, rhythm, type Viewport } from '../ui/frame';
+import type { IconName } from '../ui/icons';
+import { onLayout } from '../ui/layout';
+import { duration, enter, leave, leaveTo, motion, tween } from '../ui/motion';
 import { Pill, makePill } from '../ui/Pill';
 import { pressable, tapArea } from '../ui/pressable';
 import { prefs } from '../ui/prefs';
 import {
-  alpha,
   color,
   control,
   difficulty as difficultyColor,
   font,
   glow,
+  hairline,
   hex,
   ink,
-  radius,
   space,
   typeScale,
 } from '../ui/theme';
@@ -52,14 +55,8 @@ const DIFFICULTIES: DiffDef[] = [
   },
 ];
 
-/** Never let a card shrink below a comfortable thumb. */
-const MIN_CARD_H = 56;
-const MAX_CARD_H = 96;
 
-/** Below this height the "Choose your night" line is the first thing to go. */
-const DENSE_H = 540;
-/** Below this width the cards drop their chevron and tighten their type. */
-const NARROW_W = 380;
+
 
 /**
  * How long a tapped card will wait for the server to say which night this post
@@ -86,6 +83,10 @@ export class MainMenu extends Scene {
   /** Tonight's shared numbers — a loading line until the server answers, then null if it never does. */
   private communityLine: string | null = LISTENING;
   private soundPill: Pill | null = null;
+  /** True while the settings toggles are drawn as bare icons, on a narrow screen. */
+  private compactSettings = false;
+  /** The help card, while it is up. Everything under it goes deaf.  */
+  private help: Onboarding | null = null;
 
   constructor() {
     super('MainMenu');
@@ -97,6 +98,7 @@ export class MainMenu extends Scene {
     this.synced = false;
     this.communityLine = LISTENING;
     this.soundPill = null;
+    this.help = null;
   }
 
   create(): void {
@@ -110,9 +112,25 @@ export class MainMenu extends Scene {
 
     this.input.keyboard?.on('keydown-D', () => this.scene.start('ConstellationDebug'));
     this.input.keyboard?.on('keydown-J', () => void this.rehearseLastNight());
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.help?.destroy());
 
     // The menu rises out of the same night the splash screen left behind.
     enter(this);
+  }
+
+  /**
+   * The how-to, on request. It is the same card a first-time player gets in
+   * `Play`, so reading it here also spends that one unasked showing.
+   */
+  private openHelp(): void {
+    if (this.help) return;
+    this.help = new Onboarding(this, () => (this.help = null), 'Close');
+    this.help.layout(this.view);
+  }
+
+  /** True while the help card is up: nothing behind it may be tapped. */
+  private busy(): boolean {
+    return this.help !== null;
   }
 
   /** Rebuild at the current size, after content (not the viewport) changed. */
@@ -202,11 +220,19 @@ export class MainMenu extends Scene {
   }
 
   /**
-   * A vertical flow: the title block grows down from the top, the community and
-   * footer lines grow up from the bottom, and the difficulty cards take the
-   * space that is actually left over. Nothing is placed at a fixed offset, so
-   * nothing can collide on a short screen.
+   * A vertical flow: the title block grows down from the top, the community line
+   * and the bottom row grow up from the bottom, and the difficulty cards take
+   * the space that is actually left over. Nothing is placed at a fixed offset,
+   * so nothing can collide on a short screen.
+   *
+   * Above the fold there is a wordmark, the night it opens, one tagline and the
+   * three cards. Everything else on this screen is either behind the `?` or a
+   * single quiet row along the bottom.
    */
+  preload(): void {
+    if (!this.textures.exists('logo')) this.load.image('logo', 'logo.png');
+  }
+
   private build(view: Viewport): void {
     this.view = view;
     const { w, h } = view;
@@ -216,118 +242,97 @@ export class MainMenu extends Scene {
     this.ui.forEach((o) => o.destroy());
     this.ui = [];
 
-    const sidePad = clamp(space.md, w * 0.05, space.xxl);
-    const dense = h < DENSE_H;
-    const narrow = w < NARROW_W;
-    const textWidth = w - sidePad * 2;
+    const step = rhythm(view);
+    const textWidth = contentWidth(view);
 
     /* ---- top block, flowing down ---- */
 
-    let top = clamp(space.lg, h * 0.05, control.lg);
+    let top = margin(view);
 
-    const title = crispText(this, w / 2, top, 'TaaraNight', {
-      fontFamily: font.serif,
-      fontSize: `${clamp(typeScale.display, Math.min(w * 0.12, h * 0.08), typeScale.giant)}px`,
-      color: ink.bright,
-    }).setOrigin(0.5, 0);
-    title.setShadow(0, 0, hex(color.starlight), glow.strong, true, true);
-    this.ui.push(title);
-    top += title.height + clamp(space.xs, h * 0.012, space.md);
+    // Out of the flow, in the corner the eye checks last. The wordmark is
+    // centred and never grows wide enough to reach it: its type is clamped by
+    // `h * 0.08`, and a screen tall enough to make it wide is wide already.
+    const help = new Pill(
+      this,
+      '?',
+      { height: control.md, minWidth: control.md, paddingX: space.sm, fontSize: typeScale.lead },
+      () => this.openHelp()
+    );
+    help.setPosition(w - gutter(view) - control.md / 2, top + control.md / 2);
+    this.ui.push(help.container);
 
+    // The logo *is* the wordmark now; type only if the image never arrived.
+    let titleH: number;
+    if (this.textures.exists('logo')) {
+      const logoH = clamp(88, h * 0.2, 150);
+      const logo = this.add.image(w / 2, top, 'logo').setOrigin(0.5, 0);
+      logo.setScale(logoH / logo.height);
+      this.ui.push(logo);
+      titleH = logoH;
+    } else {
+      const title = crispText(this, w / 2, top, 'TaaraNight', {
+        fontFamily: font.serif,
+        fontSize: `${clamp(typeScale.display, Math.min(w * 0.12, h * 0.08), typeScale.giant)}px`,
+        color: ink.bright,
+      }).setOrigin(0.5, 0);
+      title.setShadow(0, 0, hex(color.starlight), glow.strong, true, true);
+      this.ui.push(title);
+      titleH = title.height;
+    }
+    // The badge belongs to the wordmark, so it sits closer than the rhythm.
+    top += titleH + space.sm;
+
+    // The wordmark has already said "TaaraNight". This says which one.
     const when = this.isArchive() ? 'An older sky' : 'Tonight';
-    const pill = makePill(this, w / 2, top + control.sm / 2, `🌙  ${when} · TaaraNight #${this.night}`, {
+    const pill = makePill(this, w / 2, top + control.sm / 2, `${when} · #${this.night}`, {
       height: control.sm,
       paddingX: space.lg,
+      icon: 'moon',
     });
     this.ui.push(pill.container);
     top += control.sm;
 
-    if (!dense) {
-      const prompt = crispText(this, w / 2, top + clamp(space.sm, h * 0.022, space.xl - space.xs), 'Choose your night', {
-        fontFamily: font.serif,
-        fontSize: `${typeScale.lead}px`,
-        color: ink.muted,
-        fontStyle: 'italic',
-      }).setOrigin(0.5, 0);
-      this.ui.push(prompt);
-      top = prompt.y + prompt.height;
-    }
 
     /* ---- bottom block, flowing up ---- */
 
-    let bottom = h - clamp(space.md, h * 0.03, space.xl + space.xs);
+    let bottom = h - margin(view);
 
-    const footer = crispText(this, w / 2, bottom, 'A new sky unlocks every night at 6 PM', {
-      fontFamily: font.sans,
-      fontSize: `${typeScale.caption}px`,
-      color: ink.faint,
-      align: 'center',
-      wordWrap: { width: textWidth },
-    }).setOrigin(0.5, 1);
-    this.ui.push(footer);
-    bottom -= footer.height + space.sm;
-
-    // The gap has to clear `MIN_TAP - control.sm`: both rows are drawn 32 tall
-    // but tap 44 tall, and two hit areas that touch let the wrong one win a thumb
-    // landing on the seam.
-    bottom = this.buildSettings(w, bottom) - space.lg;
-
-    // My Sky is reachable without solving anything: the dome is worth looking at
-    // even when it is still dark.
-    const mySky = new Pill(this, '✨  My Sky', { height: control.sm, fontSize: typeScale.caption }, () =>
-      leaveTo(this, 'MySky', {})
-    );
-    mySky.setPosition(w / 2, bottom - control.sm / 2);
-    this.ui.push(mySky.container);
-    bottom -= control.sm + space.sm;
+    bottom = this.buildBottomRow(view, bottom);
 
     if (this.communityLine) {
-      const community = crispText(this, w / 2, bottom, this.communityLine, {
+      const community = crispText(this, w / 2, bottom - space.md, this.communityLine, {
         fontFamily: font.sans,
-        fontSize: `${typeScale.body}px`,
-        color: ink.muted,
+        fontSize: `${typeScale.caption}px`,
+        color: ink.faint,
         align: 'center',
         wordWrap: { width: textWidth },
       }).setOrigin(0.5, 1);
       this.ui.push(community);
-      bottom -= community.height + space.xs;
+      bottom = community.y - community.height - space.xs;
     }
 
-    /* ---- the cards take what is left ---- */
+    /* ---- three glass circles take what is left ---- */
 
-    const edge = clamp(space.sm, h * 0.025, space.xl + space.xs);
-    const midTop = top + edge;
-    const midH = Math.max(MIN_CARD_H, bottom - edge - midTop);
-    const cardW = Math.min(textWidth, 460);
+    const midTop = top + step;
+    const midH = Math.max(80, bottom - step - midTop);
+    const gap = Math.max(space.md, Math.min(space.xl, w * 0.05));
+    const diameter = clamp(72, Math.min((w - gutter(view) * 2 - gap * 2) / 3, midH * 0.8), 132);
 
-    let gap = clamp(space.sm, h * 0.018, space.lg);
-    let cards = this.buildCards(cardW, midH, gap, narrow, false);
+    const rowY = midTop + midH / 2;
+    const startX = w / 2 - diameter - gap;
+    DIFFICULTIES.forEach((d, i) => {
+      const circle = this.makeCircle(diameter, d);
+      const cx = startX + i * (diameter + gap);
+      circle.setPosition(cx, rowY);
+      this.ui.push(circle);
 
-    // Two-line blurbs can push the stack past the space we reserved on a very
-    // short screen. Rather than let it slide under the footer, the cards give
-    // up their blurb — the label and the dots still say everything essential.
-    if (stackHeight(cards, gap) > midH) {
-      cards.forEach((c) => c.destroy());
-      gap = space.sm;
-      cards = this.buildCards(cardW, midH, gap, narrow, true);
-    }
-
-    let y = midTop + Math.max(0, (midH - stackHeight(cards, gap)) / 2);
-    cards.forEach((card, i) => {
-      const centreY = y + card.height / 2;
-      card.setPosition(w / 2, centreY);
-      y += card.height + gap;
-      this.ui.push(card);
-
-      // The three cards deal themselves in. Under stillness they only brighten:
-      // `tween` drops the rise and leaves each card where it was placed.
       if (!this.entered) {
-        card.setAlpha(0);
-        if (prefs.animate) card.setY(centreY + space.xl);
+        circle.setAlpha(0);
+        if (prefs.animate) circle.setScale(0.85);
         tween(this, {
-          targets: card,
+          targets: circle,
           alpha: 1,
-          y: centreY,
+          scale: 1,
           duration: duration.slow,
           delay: duration.micro * (1 + i),
         });
@@ -335,36 +340,101 @@ export class MainMenu extends Scene {
     });
 
     this.entered = true;
+
+    // The card outlives a resize, and must be re-hung on the new viewport.
+    this.help?.layout(view);
   }
 
   /**
-   * Sound and stillness, side by side above the footer. Returns the new bottom
-   * edge, so the cards above know how much room they still have.
+   * The one row of chrome: My Sky, then sound and stillness. Returns the new
+   * bottom edge, so the cards above know how much room they still have.
+   *
+   * My Sky sits here rather than beside the difficulty cards — a player who has
+   * not solved anything has nothing to look at — but it is a labelled button on
+   * the home screen, not a secret: the dome is worth seeing while it is dark.
+   *
+   * Where the three will not fit across the screen, the two toggles give up
+   * their labels and keep their icons. Nothing here is worth a second row.
    */
-  private buildSettings(w: number, bottom: number): number {
-    const style = { height: control.sm, fontSize: typeScale.caption, paddingX: space.md };
+  private buildBottomRow(view: Viewport, bottom: number): number {
     const y = bottom - control.sm / 2;
 
-    const sound = new Pill(this, soundLabel(), style, () => this.toggleSound());
+    const row = this.settingsRow(false);
+    if (rowWidth(row) > contentWidth(view)) {
+      row.forEach((pill) => pill.destroy());
+      row.length = 0;
+      row.push(...this.settingsRow(true));
+    }
+
+    let x = view.w / 2 - rowWidth(row) / 2;
+    for (const pill of row) {
+      pill.setPosition(x + pill.width / 2, y);
+      x += pill.width + space.sm;
+      this.ui.push(pill.container);
+    }
+
+    return bottom - control.sm;
+  }
+
+  /**
+   * The row's three pills, left to right. `compact` strips the two toggles down
+   * to their icons — never My Sky, which is the one thing on this row a first
+   * visitor has any reason to press.
+   */
+  private settingsRow(compact: boolean): Pill[] {
+    this.compactSettings = compact;
+    const labelled = { height: control.sm, paddingX: space.md, fontSize: typeScale.caption };
+    const style = compact ? { height: control.sm, paddingX: space.sm, minWidth: control.md } : labelled;
+
+    const mySky = new Pill(this, 'My Sky', { ...labelled, icon: 'sparkle' }, () => {
+      if (!this.busy()) leaveTo(this, 'MySky', {});
+    });
+
+    const sound = new Pill(this, this.soundText(), { ...style, icon: soundIcon() }, () => {
+      if (!this.busy()) this.toggleSound();
+    });
     sound.setActive(prefs.sound);
     this.soundPill = sound;
 
-    const motion = new Pill(this, motionLabel(), style, () => this.toggleMotion());
+    const motion = new Pill(this, compact ? '' : motionLabel(), { ...style, icon: motionIcon() }, () => {
+      if (!this.busy()) this.toggleMotion();
+    });
     motion.setActive(prefs.animate);
 
-    const gap = space.sm;
-    const rowW = sound.width + gap + motion.width;
-    sound.setPosition(w / 2 - rowW / 2 + sound.width / 2, y);
-    motion.setPosition(w / 2 + rowW / 2 - motion.width / 2, y);
+    // Tutorial toggle: lit means the next play opens with the hints card and
+    // the ghost comet tracing the first thread. It arms itself off for a
+    // veteran and back on with one tap — no burying it in a menu.
+    const tutorial = new Pill(this, compact ? '' : tutorialLabel(), { ...style, icon: 'sparkle' }, () => {
+      if (this.busy()) return;
+      prefs.set({ onboarded: !prefs.onboarded });
+      showToast(prefs.onboarded ? 'Tutorial off' : 'Tutorial on — it will greet your next play');
+      this.tutorialPill?.setLabel(this.compactSettings ? '' : tutorialLabel()).setActive(!prefs.onboarded);
+    });
+    tutorial.setActive(!prefs.onboarded);
+    this.tutorialPill = tutorial;
 
-    this.ui.push(sound.container, motion.container);
-    return bottom - control.sm;
+    // The toggles take the widest one's width, so a changing label cannot
+    // re-centre the row under the thumb that is still on it.
+    const widest = Math.max(sound.width, motion.width, tutorial.width);
+    sound.setMinWidth(widest);
+    motion.setMinWidth(widest);
+    tutorial.setMinWidth(widest);
+
+    return [mySky, sound, motion, tutorial];
+  }
+
+  private tutorialPill: Pill | null = null;
+
+  /** Empty while the toggles are bare icons — `toggleSound` must not put a word back. */
+  private soundText(): string {
+    return this.compactSettings ? '' : soundLabel();
   }
 
   /** The label changes in place: a whole re-layout for one word would flicker. */
   private toggleSound(): void {
     setSound(!prefs.sound);
-    this.soundPill?.setLabel(soundLabel()).setActive(prefs.sound);
+    showToast(prefs.sound ? 'Sound on' : 'Sound off');
+    this.soundPill?.setIcon(soundIcon()).setLabel(this.soundText()).setActive(prefs.sound);
   }
 
   /**
@@ -375,134 +445,52 @@ export class MainMenu extends Scene {
    */
   private toggleMotion(): void {
     prefs.set({ reducedMotion: !prefs.reducedMotion });
+    showToast(prefs.reducedMotion ? 'Stillness on' : 'Motion on');
     leave(this, () => this.scene.restart());
   }
 
-  private buildCards(
-    cardW: number,
-    midH: number,
-    gap: number,
-    narrow: boolean,
-    hideBlurb: boolean
-  ): GameObjects.Container[] {
-    const targetH = clamp(MIN_CARD_H, (midH - gap * 2) / DIFFICULTIES.length, MAX_CARD_H);
-    return DIFFICULTIES.map((d) => this.makeCard(cardW, targetH, d, narrow, hideBlurb));
-  }
 
   /**
-   * A difficulty card. Height is `max(targetH, whatever the text needs)`, so a
-   * blurb that wraps to two lines grows the card instead of spilling out of it.
+   * A difficulty as a glass disc: translucent night-surface fill under a soft
+   * inner sheen, ringed in the mode's own colour, one word in the middle.
+   * The whole disc is the button.
    */
-  private makeCard(
-    w: number,
-    targetH: number,
-    d: DiffDef,
-    narrow: boolean,
-    hideBlurb: boolean
-  ): GameObjects.Container {
-    const padX = narrow ? space.lg + space.xs : space.xl + space.xs;
-    const padY = space.md;
-    const showChevron = !narrow;
-
-    // Right-hand column: three dots, and a chevron when there is room for one.
-    const dotStep = space.lg;
-    const dotRight = w / 2 - padX;
-    const firstDot = dotRight - dotStep * 2;
-    const dotsLeft = firstDot - space.xs;
-    const chevronX = dotsLeft - space.lg;
-    const textRight = (showChevron ? chevronX : dotsLeft) - space.md;
-    const textLeft = -w / 2 + padX;
-    const textW = Math.max(60, textRight - textLeft);
-
-    const label = crispText(this, textLeft, 0, d.label, {
-      fontFamily: font.serif,
-      fontSize: `${narrow ? typeScale.title : typeScale.heading}px`,
-      color: hex(d.color),
-    }).setOrigin(0, 0);
-
-    const blurb = hideBlurb
-      ? null
-      : crispText(this, textLeft, 0, d.blurb, {
-          fontFamily: font.sans,
-          fontSize: `${typeScale.caption}px`,
-          color: ink.muted,
-          wordWrap: { width: textW },
-        }).setOrigin(0, 0);
-
-    const contentH = label.height + (blurb ? space.xs + blurb.height : 0);
-    const h = Math.max(targetH, contentH + padY * 2);
-
-    label.setY(-contentH / 2);
-    blurb?.setY(-contentH / 2 + label.height + space.xs);
+  private makeCircle(diameter: number, d: DiffDef): GameObjects.Container {
+    const r = diameter / 2;
 
     const bg = this.add.graphics();
-    const paint = (fill: number, lineAlpha: number): void => {
+    const paint = (fillAlpha: number, lineAlpha: number): void => {
       bg.clear();
-      bg.fillStyle(fill, alpha.fill);
-      bg.fillRoundedRect(-w / 2, -h / 2, w, h, radius.card);
-      bg.lineStyle(1.5, d.color, lineAlpha);
-      bg.strokeRoundedRect(-w / 2, -h / 2, w, h, radius.card);
+      // The glass: a dark body, a pale breath across the top half, a lit rim.
+      bg.fillStyle(color.surface, fillAlpha);
+      bg.fillCircle(0, 0, r);
+      bg.fillStyle(0xffffff, 0.05);
+      bg.fillEllipse(0, -r * 0.42, r * 1.5, r * 0.85);
+      bg.lineStyle(hairline * 1.5, d.color, lineAlpha);
+      bg.strokeCircle(0, 0, r);
     };
-    paint(color.surface, alpha.stroke);
+    paint(0.42, 0.6);
 
-    // The card warms towards a fill rather than snapping to it; its border rides
-    // the same curve. `shade` is the colour as it is now, so a thumb that leaves
-    // mid-fade turns around from wherever the paint had got to.
-    // Widened from the literal `color` tokens: these are values that travel.
-    let shade: number = color.surface;
-    let edge: number = alpha.stroke;
-    let fading: Tweens.Tween | null = null;
-    const paintTo = (fill: number, lineAlpha: number): void => {
-      fading?.remove();
-      const fromShade = shade;
-      const fromEdge = edge;
-      fading = crossFade(this, fromShade, fill, (blended, t) => {
-        shade = blended;
-        edge = fromEdge + (lineAlpha - fromEdge) * t;
-        paint(shade, edge);
-      });
-    };
+    const label = crispText(this, 0, 0, d.label, {
+      fontFamily: font.serif,
+      fontSize: `${diameter > 100 ? typeScale.title : typeScale.lead}px`,
+      color: hex(d.color),
+    }).setOrigin(0.5);
 
-    // Filled from the left, so Easy lights one dot and Hard lights three.
-    const dots: GameObjects.Arc[] = [];
-    for (let i = 0; i < 3; i++) {
-      const filled = i < d.dots;
-      const dot = this.add.circle(firstDot + i * dotStep, 0, 5, d.color, filled ? 1 : 0.22);
-      if (!filled) dot.setStrokeStyle(1, d.color, alpha.stroke);
-      dots.push(dot);
-    }
+    const container = this.add.container(0, 0, [bg, label]);
+    container.setSize(diameter, diameter);
 
-    const parts: GameObjects.GameObject[] = [bg, label, ...dots];
-    if (blurb) parts.push(blurb);
-    if (showChevron) {
-      parts.push(
-        crispText(this, chevronX, 0, '›', {
-          fontFamily: font.sans,
-          fontSize: `${typeScale.display}px`,
-          color: ink.muted,
-        }).setOrigin(0.5)
-      );
-    }
-
-    const container = this.add.container(0, 0, parts);
-    container.setSize(w, h);
-    // A rebuild on resize drops the card; the fade must not repaint its ghost.
-    container.once(GameObjects.Events.DESTROY, () => fading?.remove());
-
-    const scaleTo = (value: number, ms: number): void => {
-      motion(this, { targets: container, scale: value, duration: ms });
-    };
-
-    pressable(this, container, tapArea(w, h), {
+    pressable(this, container, tapArea(diameter, diameter), {
+      enabled: () => !this.busy(),
       onClick: () => void this.openPlay(d.value),
-      onHover: () => paintTo(color.surfaceHover, alpha.strokeStrong),
+      onHover: () => paint(0.55, 0.9),
       onPress: () => {
-        paintTo(color.surfacePress, alpha.strokeStrong);
-        scaleTo(0.97, duration.micro);
+        paint(0.65, 1);
+        motion(this, { targets: container, scale: 0.94, duration: duration.micro });
       },
       onRest: () => {
-        paintTo(color.surface, alpha.stroke);
-        scaleTo(1, duration.fast);
+        paint(0.42, 0.6);
+        motion(this, { targets: container, scale: 1, duration: duration.fast });
       },
     });
 
@@ -515,16 +503,30 @@ function delay(ms: number): Promise<null> {
   return new Promise((resolve) => setTimeout(() => resolve(null), ms));
 }
 
-function stackHeight(cards: GameObjects.Container[], gap: number): number {
-  return cards.reduce((sum, c) => sum + c.height, 0) + gap * (cards.length - 1);
+
+function rowWidth(pills: Pill[]): number {
+  return pills.reduce((sum, p) => sum + p.width, 0) + space.sm * (pills.length - 1);
 }
 
 function soundLabel(): string {
-  return prefs.sound ? '🔊  Sound' : '🔇  Muted';
+  return prefs.sound ? 'Sound' : 'Muted';
+}
+
+function tutorialLabel(): string {
+  return 'Tutorial';
+}
+
+function soundIcon(): IconName {
+  return prefs.sound ? 'sound' : 'mute';
 }
 
 function motionLabel(): string {
-  return prefs.animate ? '✨  Motion' : '🌙  Stillness';
+  return prefs.animate ? 'Motion' : 'Stillness';
+}
+
+/** Stillness wears the moon: the sky is still there, it has simply stopped moving. */
+function motionIcon(): IconName {
+  return prefs.animate ? 'sparkle' : 'moon';
 }
 
 /** The soft community line under the difficulty cards. Never shames an empty sky. */
@@ -535,5 +537,7 @@ function describeTonight(starsTonight: number, jwala: number, archive: boolean):
       ? `${starsTonight.toLocaleString()} stars lit ${when}`
       : `No stars lit ${when} — yours could be first`;
 
-  return jwala > 0 ? `${stars}  ·  Jwala 🔥 ${jwala}` : stars;
+  // No icon here: this is one wrapped, centred line of prose, and a Graphics
+  // cannot flow inside a `Text`. "Jwala" is the streak's name — it needs no glyph.
+  return jwala > 0 ? `${stars}  ·  Jwala ${jwala}` : stars;
 }

@@ -98,13 +98,25 @@ export type LeaderboardEntry = {
   rank: number;
 };
 
+/** One row of the unified nightly board. */
+export type NightBoardEntry = {
+  username: string;
+  /** 1-based. */
+  rank: number;
+  difficulty: 'easy' | 'medium' | 'hard';
+  glitches: number;
+  timeMs: number;
+  whispers: number;
+};
+
 export type LeaderboardsResponse = {
   type: 'leaderboards';
   night: number;
-  /** Fastest solves tonight — Hard mode only. */
-  fastest: LeaderboardEntry[];
-  /** Fewest Whispers tonight — Medium and Hard only (Easy has no Whispers). */
-  fewestWhispers: LeaderboardEntry[];
+  /**
+   * The one board for the night: Hard above Medium above Easy, then fewer
+   * Glitches, then less time, then fewer Whispers. Valid for the night.
+   */
+  tonight: NightBoardEntry[];
   /** Longest burning Jwala, all-time. */
   longestJwala: LeaderboardEntry[];
 };
@@ -123,6 +135,15 @@ export type ShareResponse = {
   text: string;
   /** Where the comment lives, when we know. */
   permalink: string | null;
+};
+
+/** The result of sharing the night as its own post. */
+export type SharePostResponse = {
+  type: 'sharePost';
+  alreadyShared: boolean;
+  title: string;
+  text: string;
+  permalink: string;
 };
 
 export type ErrorResponse = {

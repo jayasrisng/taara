@@ -17,15 +17,39 @@
 
 import type { GameObjects, Scene, Types } from 'phaser';
 
+/** At or below this CSS-pixel short side we treat the screen as a phone. */
+const PHONE_SHORT_SIDE = 540;
+
 /**
- * Device pixels per CSS pixel, capped at 2.
+ * Device pixels per CSS pixel, capped by how big the screen physically is.
  *
- * Past 2 the extra sharpness is invisible at phone viewing distance while the
- * full-screen gradient, vignette and star glows all overdraw with the square of
- * the ratio — a bad trade inside Reddit's mobile webview, where a 3× phone
- * would otherwise render 9× the fragments of a 1× desktop.
+ * The cap exists to bound fragment cost: the full-screen gradient, vignette and
+ * star glows all overdraw with the *square* of the ratio. But cost is
+ * `cssArea × ratio²`, and a phone's css area is small — a 430×932 phone at 3×
+ * paints 3.6M fragments, half of what a 2560×1440 desktop at 2× already paints
+ * without complaint. So a flat cap of 2 buys nothing on phones and costs a lot:
+ * it renders a DPR-3 screen at ⅔ resolution and lets the browser upscale, which
+ * is exactly where the text and glow softness lives.
+ *
+ * Hence 3 on phone-sized screens, 2 on large ones (where a 3× panel really
+ * would be a bad trade).
  */
-export const DPR = typeof window === 'undefined' ? 1 : Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+export function displayScale(ratio: number, shortSide: number): number {
+  const cap = shortSide <= PHONE_SHORT_SIDE ? 3 : 2;
+  return Math.min(cap, Math.max(1, ratio || 1));
+}
+
+/**
+ * Measured off `window`, not the game container: the playtest mobile toggle
+ * shrinks the container to simulate a phone *layout*, and we must not answer
+ * that by re-rasterising the whole game at 3×. Short side rather than width so
+ * the answer survives rotation — `DPR` is read once at load, and the textures
+ * baked against it can't be re-baked when the phone turns.
+ */
+export const DPR =
+  typeof window === 'undefined'
+    ? 1
+    : displayScale(window.devicePixelRatio, Math.min(window.innerWidth, window.innerHeight));
 
 /**
  * Convert a design-space scale into a texture scale.

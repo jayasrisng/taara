@@ -16,6 +16,7 @@ import type {
   InitResponse,
   LeaderboardsResponse,
   MySkyResponse,
+  SharePostResponse,
   ShareResponse,
 } from '../shared/api';
 
@@ -75,4 +76,8 @@ export function postComplete(body: CompleteRequest): Promise<CompleteResponse | 
  */
 export function postShare(): Promise<Attempt<ShareResponse>> {
   return attempt<ShareResponse>('/api/share', { method: 'POST' });
+}
+
+export function postSharePost(): Promise<Attempt<SharePostResponse>> {
+  return attempt<SharePostResponse>('/api/sharePost', { method: 'POST' });
 }

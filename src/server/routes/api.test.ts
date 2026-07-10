@@ -20,6 +20,7 @@ const live = {
   subredditName: 'taara_connect_dev',
   postId: 't3_abc' as string | undefined,
   comments: [] as SubmittedComment[],
+  posts: [] as { subredditName: string; title: string; text: string; runAs?: string }[],
 };
 
 vi.mock('@devvit/web/server', () => ({
@@ -32,6 +33,7 @@ vi.mock('@devvit/web/server', () => ({
     hGetAll: (...a: Parameters<typeof live.redis.hGetAll>) => live.redis.hGetAll(...a),
     hSet: (...a: Parameters<typeof live.redis.hSet>) => live.redis.hSet(...a),
     zAdd: (...a: Parameters<typeof live.redis.zAdd>) => live.redis.zAdd(...a),
+    zScore: (...a: Parameters<typeof live.redis.zScore>) => live.redis.zScore(...a),
     zRange: (...a: Parameters<typeof live.redis.zRange>) => live.redis.zRange(...a),
   },
   reddit: {
@@ -39,6 +41,10 @@ vi.mock('@devvit/web/server', () => ({
     submitComment: async (comment: SubmittedComment) => {
       live.comments.push(comment);
       return { id: `t1_${live.comments.length}`, permalink: `/r/x/comments/abc/_/c${live.comments.length}/` };
+    },
+    submitPost: async (post: { subredditName: string; title: string; text: string; runAs?: string }) => {
+      live.posts.push(post);
+      return { id: `t3_share${live.posts.length}`, permalink: `/r/x/comments/share${live.posts.length}/` };
     },
   },
   context: {
@@ -71,6 +77,7 @@ describe('routes', () => {
     live.subredditName = 'taara_connect_dev';
     live.postId = 't3_abc';
     live.comments = [];
+    live.posts = [];
   });
 
   it('GET /init returns tonight', async () => {
@@ -160,15 +167,17 @@ describe('routes', () => {
    * outline showing is not the same race. Playing Easy — even in sixteen
    * seconds, even after a Hard solve is on file — must never put a time on it.
    */
-  it('POST /complete on Easy never files a Fastest time', async () => {
+  it('POST /complete on a second mode improves the unified board row', async () => {
     await post({ difficulty: 'easy', timeMs: 16_000, whispers: 0, glitches: 0 });
 
-    const boards = await (await api.request('/leaderboards')).json();
-    expect(boards.fastest).toEqual([]);
+    let boards = await (await api.request('/leaderboards')).json();
+    expect(boards.tonight).toHaveLength(1);
+    expect(boards.tonight[0].difficulty).toBe('easy');
 
-    // The Hard replay is not recorded either — the night already has a record.
     await post({ difficulty: 'hard', timeMs: 16_000, whispers: 0, glitches: 0 });
-    expect((await (await api.request('/leaderboards')).json()).fastest).toEqual([]);
+    boards = await (await api.request('/leaderboards')).json();
+    expect(boards.tonight).toHaveLength(1);
+    expect(boards.tonight[0].difficulty).toBe('hard');
   });
 
   /**
@@ -177,12 +186,14 @@ describe('routes', () => {
    * *record*, not the solve just played, and the results screen must not read
    * it as one. See client/ui/nightSummary.test.ts for the other half.
    */
-  it('POST /complete echoes the recorded solve, not the one just replayed', async () => {
+  it('POST /complete keeps the night record on the first solve, whatever follows', async () => {
     await post({ difficulty: 'hard', timeMs: 16_000, whispers: 0, glitches: 0 });
-    const replay = await (await post({ difficulty: 'easy', timeMs: 90_000, whispers: 0, glitches: 0 })).json();
+    await post({ difficulty: 'easy', timeMs: 90_000, whispers: 0, glitches: 0 });
+    const replay = await (await post({ difficulty: 'hard', timeMs: 1, whispers: 0, glitches: 0 })).json();
 
     expect(replay.alreadyPlayed).toBe(true);
     expect(replay.result.difficulty).toBe('hard');
+    expect(replay.result.timeMs).toBe(16_000);
     expect((await (await api.request('/init')).json()).tonight.difficulty).toBe('hard');
   });
 
@@ -194,8 +205,8 @@ describe('routes', () => {
     expect(mysky.entries[0].constellationId).toBeTruthy();
 
     const boards = await (await api.request('/leaderboards')).json();
-    expect(boards.fastest).toEqual([{ username: 'ana', value: 42_000, rank: 1 }]);
-    expect(boards.fewestWhispers).toEqual([{ username: 'ana', value: 1, rank: 1 }]);
+    expect(boards.tonight).toHaveLength(1);
+    expect(boards.tonight[0]).toMatchObject({ username: 'ana', rank: 1, timeMs: 42_000, whispers: 1 });
     expect(boards.longestJwala).toEqual([{ username: 'ana', value: 1, rank: 1 }]);
   });
 });
@@ -205,6 +216,54 @@ describe('routes', () => {
  * community count, the boards, the recorded result — must be about the night
  * the post was pinned to, not about tonight.
  */
+describe('POST /sharePost', () => {
+  beforeEach(() => {
+    live.redis = createFakeRedis();
+    live.username = 'ana';
+    live.postId = 't3_abc';
+    live.comments = [];
+    live.posts = [];
+  });
+
+  const solve = { difficulty: 'hard', timeMs: 42_000, whispers: 1, glitches: 2 };
+  const post = () =>
+    api.request('/complete', {
+      method: 'POST',
+      body: JSON.stringify(solve),
+      headers: { 'content-type': 'application/json' },
+    });
+  const sharePost = () => api.request('/sharePost', { method: 'POST' });
+
+  it('submits the night as the player’s own post, spoiler-free, with a link', async () => {
+    await post();
+    await live.redis.set('tn:night:10:post', 't3_night10');
+    const body = await (await sharePost()).json();
+
+    expect(body.alreadyShared).toBe(false);
+    expect(live.posts).toHaveLength(1);
+    expect(live.posts[0]?.runAs).toBe('USER');
+    expect(live.posts[0]?.title).toContain('TaaraNight #');
+    expect(live.posts[0]?.text).toContain('Mode: Hard');
+    expect(live.posts[0]?.text).toContain('reddit.com/r/taara_connect_dev/comments/night10');
+    const name = (await import('../../shared/puzzleEngine')).selectConstellationForNight(10).name;
+    expect(live.posts[0]?.text).not.toContain(name);
+  });
+
+  it('posts once per night, however many times it is asked', async () => {
+    await post();
+    await sharePost();
+    const again = await (await sharePost()).json();
+    expect(again.alreadyShared).toBe(true);
+    expect(live.posts).toHaveLength(1);
+  });
+
+  it('refuses before the night is revealed', async () => {
+    const res = await sharePost();
+    expect(res.status).toBe(400);
+    expect(live.posts).toHaveLength(0);
+  });
+});
+
 describe('an archive post', () => {
   const ARCHIVE_NIGHT = 4;
 
@@ -214,6 +273,7 @@ describe('an archive post', () => {
     live.subredditName = 'taara_connect_dev';
     live.postId = 't3_old';
     live.comments = [];
+    live.posts = [];
     await live.redis.set(keys.postNight('t3_old'), String(ARCHIVE_NIGHT));
   });
 
@@ -234,12 +294,12 @@ describe('an archive post', () => {
 
     const boards = await (await api.request('/leaderboards')).json();
     expect(boards.night).toBe(ARCHIVE_NIGHT);
-    expect(boards.fastest).toEqual([{ username: 'ana', value: 42_000, rank: 1 }]);
+    expect(boards.tonight[0]).toMatchObject({ username: 'ana', timeMs: 42_000 });
 
     live.postId = 't3_tonight';
     const tonight = await (await api.request('/leaderboards')).json();
     expect(tonight.night).not.toBe(ARCHIVE_NIGHT);
-    expect(tonight.fastest).toEqual([]);
+    expect(tonight.tonight).toEqual([]);
   });
 
   it('shares that night’s card', async () => {
@@ -262,6 +322,7 @@ describe('POST /share', () => {
     live.subredditName = 'taara_connect_dev';
     live.postId = 't3_abc';
     live.comments = [];
+    live.posts = [];
   });
 
   it('comments the card on the post, as the player', async () => {

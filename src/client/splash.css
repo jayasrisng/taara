@@ -1,8 +1,10 @@
 /*
  * The post preview: the first thing anyone sees of TaaraNight, in the feed.
  *
- * Same palette as the game's NightSky (#05060f → #161a3e, accent #ffe3a3) so the
- * card and the sky it opens feel like one night. The stars are drawn with
+ * Same palette as the game (sky #05060f → #161a3e, surface #1a2048, accent
+ * #ffe3a3) so the card and the sky it opens feel like one night. Plain CSS in
+ * its own webview: it cannot import `ui/theme.ts`, so these five values are
+ * copied by hand and have to be re-copied by hand. The stars are drawn with
  * radial-gradients rather than an image, matching the game's procedural art —
  * nothing here to download but the logo.
  *
@@ -81,7 +83,8 @@
   aspect-ratio: 1;
   border-radius: 18px;
   object-fit: contain;
-  box-shadow: 0 0 34px rgba(120, 140, 255, 0.28);
+  /* A rim of starlight, not a lamp behind the card. */
+  box-shadow: 0 0 18px rgba(120, 140, 255, 0.14);
 }
 
 .hook {
@@ -100,27 +103,43 @@
   min-height: 1.2em; /* hold the line's space before the night number lands */
 }
 
+/*
+ * The one button, in the game's own language: a dark pill, a hairline of gold,
+ * gold type. It used to be a solid gold lozenge under a 22px shadow — a shape
+ * that glowed at you from the feed and matched nothing inside the app, where
+ * every control is a bordered pill over the night.
+ *
+ * The fill is the sky's own surface (#1a2048) warmed by the faintest gold; the
+ * only "glow" is the border going from half-lit to lit under a thumb.
+ */
 .start {
   margin-top: 4px;
   min-height: 48px; /* a comfortable thumb, on the smallest phone */
   padding: 0 26px;
-  border: none;
+  border: 1px solid rgba(255, 227, 163, 0.55);
   border-radius: 24px;
-  background: linear-gradient(#ffe9b8, #ffd27f);
-  color: #241a0a;
+  background: linear-gradient(rgba(255, 227, 163, 0.1), rgba(255, 227, 163, 0.03)), #1a2048;
+  color: #ffe3a3;
   font-size: 1.02rem;
   font-weight: 600;
+  letter-spacing: 0.01em;
   cursor: pointer;
-  box-shadow: 0 6px 22px rgba(255, 210, 127, 0.24);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
 }
 
 .start:hover {
-  box-shadow: 0 8px 28px rgba(255, 210, 127, 0.36);
+  border-color: rgba(255, 227, 163, 0.85);
+  background-color: #232a58;
 }
 
 .start:active {
   transform: scale(0.97);
+  background-color: #272e60;
+}
+
+.start:focus-visible {
+  outline: 2px solid rgba(255, 227, 163, 0.85);
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {

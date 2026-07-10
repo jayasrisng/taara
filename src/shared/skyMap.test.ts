@@ -7,13 +7,10 @@ import {
   fieldStars,
   nearestStar,
   projectSky,
-  radiusForDec,
+  xForRa,
+  yForDec,
   type MapPoint,
 } from './skyMap';
-
-function length(point: MapPoint): number {
-  return Math.hypot(point.x, point.y);
-}
 
 function starOf(constellationId: string, name: string): MapPoint {
   const constellation = getConstellationById(constellationId);
@@ -22,27 +19,28 @@ function starOf(constellationId: string, name: string): MapPoint {
   return projectSky(star);
 }
 
-describe('radiusForDec', () => {
-  it('puts the celestial pole at the centre and the rim at radius 1', () => {
-    expect(radiusForDec(90)).toBe(0);
-    expect(radiusForDec(SKY_EDGE_DEC)).toBeCloseTo(1, 10);
+describe('yForDec / xForRa', () => {
+  it('puts the north pole a unit above the equator and the south a unit below', () => {
+    expect(yForDec(90)).toBe(-1);
+    expect(yForDec(0)).toBeCloseTo(0, 10);
+    expect(yForDec(SKY_EDGE_DEC)).toBe(1);
   });
 
-  it('places the celestial equator between them', () => {
-    // tan(45°) / tan(67.5°)
-    expect(radiusForDec(0)).toBeCloseTo(0.41421, 5);
+  it('runs east to the left: growing right ascension lowers x', () => {
+    expect(xForRa(6)).toBeLessThan(xForRa(0));
+    expect(xForRa(24)).toBeCloseTo(-4, 10);
   });
 
-  it('grows monotonically as declination falls', () => {
-    for (let dec = 89; dec > SKY_EDGE_DEC; dec -= 1) {
-      expect(radiusForDec(dec - 1)).toBeGreaterThan(radiusForDec(dec));
+  it('falls monotonically as declination climbs', () => {
+    for (let dec = -89; dec < 90; dec += 1) {
+      expect(yForDec(dec + 1)).toBeLessThan(yForDec(dec));
     }
   });
 });
 
 describe('projectSky', () => {
-  it('leaves Polaris all but on the pole', () => {
-    expect(length(starOf('ursa-minor', 'Polaris'))).toBeLessThan(0.01);
+  it('leaves Polaris all but on the pole parallel', () => {
+    expect(Math.abs(starOf('ursa-minor', 'Polaris').y - -1)).toBeLessThan(0.01);
   });
 
   it('rounds to four decimals, so every engine agrees', () => {
@@ -55,10 +53,8 @@ describe('projectSky', () => {
     expect(projectSky({ ra: 13.7923, dec: 49.3133 })).toEqual(projectSky({ ra: 13.7923, dec: 49.3133 }));
   });
 
-  // At 6h of right ascension the star sits straight below the pole, so the local
-  // sky frame lines up with the screen: north is up, east is left. Get this
-  // backwards and every constellation on the dome is mirrored.
-  it('puts north up and east left where the two frames coincide', () => {
+  // North up, east left — everywhere, which is the whole point of the chart.
+  it('puts north up and east left', () => {
     const here = projectSky({ ra: 6, dec: 0 });
     const north = projectSky({ ra: 6, dec: 1 });
     const east = projectSky({ ra: 6.1, dec: 0 });
@@ -76,10 +72,13 @@ describe('projectSky', () => {
     expect(betelgeuse.y).toBeLessThan(rigel.y);
   });
 
-  it('keeps every star in the dataset inside the dome', () => {
+  it('keeps every star in the dataset on the chart', () => {
     for (const constellation of loadConstellations().constellations) {
       for (const star of constellation.stars) {
-        expect(length(projectSky(star))).toBeLessThanOrEqual(1);
+        const p = projectSky(star);
+        expect(Math.abs(p.y)).toBeLessThanOrEqual(1);
+        expect(p.x).toBeLessThanOrEqual(0.0001);
+        expect(p.x).toBeGreaterThanOrEqual(-4);
       }
     }
   });
@@ -98,9 +97,9 @@ describe('SKY_FIGURES', () => {
     });
   });
 
-  it('gives each figure a centre inside the dome and a radius that covers its stars', () => {
+  it('gives each figure a centre on the chart and a radius that covers its stars', () => {
     for (const figure of SKY_FIGURES) {
-      expect(length(figure.centre)).toBeLessThan(1);
+      expect(Math.abs(figure.centre.y)).toBeLessThan(1);
       expect(figure.radius).toBeGreaterThan(0);
 
       for (const point of figure.points) {
@@ -136,14 +135,16 @@ describe('SKY_BOUNDS', () => {
     expect(Math.max(...points.map((p) => p.y))).toBe(SKY_BOUNDS.maxY);
   });
 
-  it('is a portrait rectangle well inside the disc, not the disc itself', () => {
-    expect(SKY_BOUNDS.height).toBeGreaterThan(SKY_BOUNDS.width);
-    expect(SKY_BOUNDS.width).toBeLessThan(2);
+  it('spans the full chart: 24 hours across, pole to pole', () => {
+    expect(SKY_BOUNDS.width).toBeGreaterThan(3.5);
+    // A hair over 24h: figures that straddle 0h are unwrapped past the seam.
+    expect(SKY_BOUNDS.width).toBeLessThanOrEqual(4.6);
+    expect(SKY_BOUNDS.height).toBeLessThanOrEqual(2);
   });
 
-  it('contains the celestial pole, which the dome turns around', () => {
-    expect(SKY_BOUNDS.minX).toBeLessThan(0);
-    expect(SKY_BOUNDS.maxX).toBeGreaterThan(0);
+  it('contains the celestial equator', () => {
+    expect(SKY_BOUNDS.minY).toBeLessThan(0);
+    expect(SKY_BOUNDS.maxY).toBeGreaterThan(0);
     expect(SKY_BOUNDS.minY).toBeLessThan(0);
     expect(SKY_BOUNDS.maxY).toBeGreaterThan(0);
   });
@@ -178,12 +179,12 @@ describe('fieldStars', () => {
     expect(fieldStars(60, 8)).not.toEqual(fieldStars(60, 7));
   });
 
-  it('draws the count it was asked for, inside the dome', () => {
+  it('draws the count it was asked for, on the chart', () => {
     const stars = fieldStars(240, 7);
     expect(stars).toHaveLength(240);
 
     for (const star of stars) {
-      expect(length(star)).toBeLessThanOrEqual(1);
+      expect(Math.abs(star.y)).toBeLessThanOrEqual(1);
       expect(star.magnitude).toBeGreaterThanOrEqual(0);
       expect(star.magnitude).toBeLessThanOrEqual(1);
     }

@@ -22,11 +22,12 @@ import type {
   InitResponse,
   LeaderboardsResponse,
   MySkyResponse,
+  SharePostResponse,
   ShareResponse,
 } from '../../shared/api';
 import { EMPTY_JWALA } from '../../shared/jwala';
 import { millisUntilNextNight } from '../../shared/nightSeed';
-import { buildShareText } from '../../shared/share';
+import { buildSharePost, buildShareText } from '../../shared/share';
 import { postNight, resolveNight } from '../core/night';
 import { TOTAL_CONSTELLATIONS } from '../core/records';
 import { store } from '../core/store';
@@ -187,7 +188,10 @@ api.post('/share', async (c) => {
     }
 
     // `runAs: 'USER'` posts as the player rather than the app account, which is
-    // what makes this a *share*. It needs permissions.reddit.asUser in devvit.json.
+    // what makes this a *share*. What enables it is `permissions.reddit.scope:
+    // "user"` in devvit.json — *not* `asUser`, which the config schema documents
+    // as "not currently in use". Leaving `asUser` set is harmless and states the
+    // intent, but it is not what grants the right.
     const comment = await reddit.submitComment({ id: postId, text, runAs: 'USER' });
     await store.saveShare(night, username, comment.permalink);
 
@@ -200,5 +204,63 @@ api.post('/share', async (c) => {
   } catch (error) {
     console.error('share failed:', error);
     return fail(c, 'Could not post tonight’s card');
+  }
+});
+
+/**
+ * Share the night as its own post — the Wordle move. Composed on the server
+ * from the stored result like the comment, same spoiler rule, one per player
+ * per night. The body carries a link back to the nightly post so a reader can
+ * play the same sky.
+ */
+api.post('/sharePost', async (c) => {
+  try {
+    const night = await postNight();
+    const username = await reddit.getCurrentUsername();
+    if (!username) return fail(c, 'Sign in to share your night');
+
+    const result = await store.loadResult(night, username);
+    if (!result) return fail(c, 'Reveal tonight’s sky before sharing it');
+
+    const jwala = await store.loadJwala(username);
+
+    // Link the reader to the same night's post, so the shared sky is playable.
+    const nightPostId = await store.loadNightPost(night);
+    const subreddit = context.subredditName;
+    const gameLink =
+      nightPostId && subreddit
+        ? `https://www.reddit.com/r/${subreddit}/comments/${nightPostId.replace(/^t3_/, '')}/`
+        : null;
+
+    const card = buildSharePost(result, jwala, gameLink);
+
+    const posted = await store.loadSharePost(night, username);
+    if (posted) {
+      return c.json<SharePostResponse>({
+        type: 'sharePost',
+        alreadyShared: true,
+        ...card,
+        permalink: posted,
+      });
+    }
+
+    if (!subreddit) return fail(c, 'Could not tell which community to post in');
+    const post = await reddit.submitPost({
+      subredditName: subreddit,
+      title: card.title,
+      text: card.text,
+      runAs: 'USER',
+    });
+    await store.saveSharePost(night, username, post.permalink);
+
+    return c.json<SharePostResponse>({
+      type: 'sharePost',
+      alreadyShared: false,
+      ...card,
+      permalink: post.permalink,
+    });
+  } catch (error) {
+    console.error('sharePost failed:', error);
+    return fail(c, 'Could not share your night as a post');
   }
 });

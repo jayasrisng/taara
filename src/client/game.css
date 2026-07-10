@@ -8,8 +8,10 @@ body {
   color: #f5f3ff;
   background-color: #070b1f;
   /* A drag across the sky is the game's, not the feed's: no pull-to-refresh,
-     no rubber-banding the page out from under a half-drawn constellation. */
+     no rubber-banding the page out from under a half-drawn constellation, and
+     no two-finger page zoom stealing the dome's pinch. */
   overscroll-behavior: none;
+  touch-action: none;
 }
 
 #app {

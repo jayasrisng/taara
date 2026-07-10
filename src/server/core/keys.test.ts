@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keys, whispersFromScore, whisperScore } from './keys';
+import { keys, nightScore, nightScoreParts } from './keys';
 
 describe('keys', () => {
   it('namespaces every key under tn:', () => {
@@ -9,8 +9,9 @@ describe('keys', () => {
       keys.result(3, 'stargazer'),
       keys.jwala('stargazer'),
       keys.sky('stargazer'),
-      keys.lbFastest(3),
-      keys.lbWhispers(3),
+      keys.lbNight(3),
+      keys.resultDiff(3, 'stargazer', 'hard'),
+      keys.sharePost(3, 'stargazer'),
       keys.lbJwala(),
       keys.share(3, 'stargazer'),
       keys.postNight('t3_abc'),
@@ -34,27 +35,35 @@ describe('keys', () => {
   });
 });
 
-describe('whisperScore', () => {
-  it('orders fewer Whispers ahead of more, whatever the time', () => {
-    expect(whisperScore(0, 999_999)).toBeLessThan(whisperScore(1, 0));
-    expect(whisperScore(1, 999_999)).toBeLessThan(whisperScore(2, 0));
+describe('nightScore', () => {
+  type Diff = 'easy' | 'medium' | 'hard';
+  const row = (difficulty: Diff, glitches: number, timeMs: number, whispers: number): number =>
+    nightScore({ difficulty, glitches, timeMs, whispers });
+
+  it('ranks Hard above Medium above Easy, whatever the numbers', () => {
+    expect(row('hard', 999, 9_999_999, 99)).toBeLessThan(row('medium', 0, 0, 0));
+    expect(row('medium', 999, 9_999_999, 99)).toBeLessThan(row('easy', 0, 0, 0));
   });
 
-  it('breaks ties on Whispers by solve time', () => {
-    expect(whisperScore(2, 10_000)).toBeLessThan(whisperScore(2, 20_000));
+  it('then ranks fewer Glitches, then less time, then fewer Whispers', () => {
+    expect(row('hard', 0, 9_999_999, 99)).toBeLessThan(row('hard', 1, 0, 0));
+    expect(row('hard', 1, 10_000, 99)).toBeLessThan(row('hard', 1, 10_001, 0));
+    expect(row('hard', 1, 10_000, 1)).toBeLessThan(row('hard', 1, 10_000, 2));
   });
 
-  it('recovers the Whisper count for display', () => {
-    for (const whispers of [0, 1, 2, 3]) {
-      for (const timeMs of [0, 1, 45_000, 999_999]) {
-        expect(whispersFromScore(whisperScore(whispers, timeMs))).toBe(whispers);
+  it('round-trips every field for display', () => {
+    for (const difficulty of ['easy', 'medium', 'hard'] as const) {
+      for (const parts of [
+        { difficulty, glitches: 0, timeMs: 0, whispers: 0 },
+        { difficulty, glitches: 3, timeMs: 45_000, whispers: 2 },
+        { difficulty, glitches: 999, timeMs: 9_999_999, whispers: 99 },
+      ]) {
+        expect(nightScoreParts(nightScore(parts))).toEqual(parts);
       }
     }
   });
 
-  it('clamps the tiebreak so a slow solve cannot bleed into the next Whisper', () => {
-    const verySlow = whisperScore(1, 5_000_000);
-    expect(whispersFromScore(verySlow)).toBe(1);
-    expect(verySlow).toBeLessThan(whisperScore(2, 0));
+  it('stays integer-safe at its ceiling', () => {
+    expect(row('easy', 999, 9_999_999, 99)).toBeLessThan(Number.MAX_SAFE_INTEGER);
   });
 });

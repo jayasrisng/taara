@@ -27,8 +27,10 @@ export interface Connection {
 export interface Constellation {
   /** Unique identifier */
   id: string;
-  /** Display name of the constellation */
+  /** Latin name of the constellation, e.g. "Ursa Minor" */
   name: string;
+  /** English meaning, e.g. "The Little Bear" */
+  meaning: string;
   /** Star positions, projected from `ra`/`dec` into the 0–1 box */
   stars: Star[];
   /** Connections between stars (by index) */

@@ -16,7 +16,8 @@ import {
 } from '../../shared/constellationLoader';
 import type { Constellation } from '../../shared/constellations';
 import { crispText } from '../ui/display';
-import { clamp, onLayout, type Viewport } from '../ui/layout';
+import { clamp, type Viewport } from '../ui/frame';
+import { onLayout } from '../ui/layout';
 
 export class ConstellationDebug extends Scene {
   private currentIndex = 0;

@@ -18,11 +18,12 @@ import { Scene, GameObjects } from 'phaser';
 import { ambience } from '../audio/ambience';
 import { narration } from '../audio/narration';
 import { crispText } from './display';
-import { clamp, type Viewport } from './layout';
+import { clamp, gutter, margin, type Viewport } from './frame';
+import type { IconName } from './icons';
 import { duration, ease, tween } from './motion';
 import { Pill } from './Pill';
 import { prefs } from './prefs';
-import { alpha, color, control, font, glow, hex, ink, radius, space, typeScale } from './theme';
+import { alpha, color, control, font, glow, hairline, hex, ink, radius, space, typeScale } from './theme';
 
 /** Below this width the type tightens. */
 const NARROW_W = 420;
@@ -66,13 +67,13 @@ export class StoryCard {
     this.card?.destroy();
     this.readPill = null;
 
-    const margin = clamp(space.md, h * 0.04, space.xxl + space.sm);
-    const sidePad = clamp(space.md, w * 0.045, space.xl + space.xs);
-    const maxH = h - margin * 2;
-    const cardW = Math.min(w - sidePad * 2, 560);
-    const wrap = cardW - space.xxl - space.lg;
+    const maxH = h - margin(view) * 2;
+    const cardW = Math.min(w - gutter(view) * 2, 560);
+    // The card's own inner padding, left and right. The story never runs to its edge.
+    const padX = space.xl;
+    const wrap = cardW - padX * 2;
 
-    const padTop = space.xl + space.xs;
+    const padTop = space.xl;
     const gap = space.lg;
     const noteGap = space.md;
     const readGap = space.md;
@@ -111,7 +112,7 @@ export class StoryCard {
 
     // Offered only where the browser has a voice to offer it with.
     const read = narration.available()
-      ? new Pill(this.scene, this.readLabel(), { minWidth: 200 }, () => this.toggleRead())
+      ? new Pill(this.scene, this.readLabel(), { minWidth: 200, icon: this.readIcon() }, () => this.toggleRead())
       : null;
     this.readPill = read;
 
@@ -142,7 +143,7 @@ export class StoryCard {
     const bg = this.scene.add.graphics();
     bg.fillStyle(color.card, alpha.card);
     bg.fillRoundedRect(-cardW / 2, top, cardW, cardH, radius.modal);
-    bg.lineStyle(1.5, color.accentGlow, alpha.border);
+    bg.lineStyle(hairline, color.accentGlow, alpha.border);
     bg.strokeRoundedRect(-cardW / 2, top, cardW, cardH, radius.modal);
 
     const parts: GameObjects.GameObject[] = [bg, title, body];
@@ -215,13 +216,22 @@ export class StoryCard {
     ambience.duck(true);
     narration.speak(this.options.story, () => {
       ambience.duck(false);
-      this.readPill?.setLabel(this.readLabel());
+      this.refreshReadPill();
     });
-    this.readPill?.setLabel(this.readLabel());
+    this.refreshReadPill();
+  }
+
+  private refreshReadPill(): void {
+    this.readPill?.setIcon(this.readIcon()).setLabel(this.readLabel());
   }
 
   /** Reads the narrator, not a flag, so a rebuilt card knows it is mid-story. */
   private readLabel(): string {
-    return narration.speaking ? 'Stop reading' : '🔊  Read aloud';
+    return narration.speaking ? 'Stop reading' : 'Read aloud';
+  }
+
+  /** A crossed-out speaker while it speaks: tapping it is what silences the voice. */
+  private readIcon(): IconName {
+    return narration.speaking ? 'mute' : 'sound';
   }
 }
